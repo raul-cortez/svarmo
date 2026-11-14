@@ -360,6 +360,7 @@ const selfRestartNote = (absPath, guide, foreign = foreignProvider(), dossier = 
     `${where}`,
     ...(dossier ? [
       `Файл — одним JSON: {"restart": true,${foreign ? '' : ' "model": "sonnet",'} "prompt": "чем займётся свежая сессия"}.`,
+      'prompt — ОДНА фраза о задаче; шаги, пути и «прочитай…» — в файл работы, не в prompt.',
       foreign ? 'Поле model НЕ пиши: ты работаешь не на Claude, и без него вкладка поднимется на той же модели.'
         : 'Модель называй явно каждый раз, иначе вкладка, раз попав на дорогую, доживает на ней до конца задачи.',
     ] : foreign ? [
