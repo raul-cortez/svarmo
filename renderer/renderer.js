@@ -5443,8 +5443,9 @@ function maybeNotify(id, prev, next) {
   if (!notifyActive && id === activeId && document.hasFocus()) return;
   const s = sessions.get(id);
   // Исполнитель бригады: его «готов» и вопросы получает прораб, человеку они только шум.
-  // Зовём лишь за разрешением — его прораб не раздаёт (спека, «Кто что видит»).
-  if (s && s.parentId && !(next === 'waiting' && s.waitKind === 'permission')) return;
+  // Зовём лишь за разрешением — его прораб не раздаёт (спека, «Кто что видит»). Забранный
+  // человеком исполнитель (мандат снят) зовёт человека, как любая вкладка.
+  if (s && s.parentId && s.auto && !(next === 'waiting' && s.waitKind === 'permission')) return;
 
   let body = null;
   if (next === 'waiting') {
@@ -7723,7 +7724,8 @@ async function restoreOrStart() {
     const childId = byTabKey.get(t.tabKey);
     const parentId = byTabKey.get(t.parentTabKey);
     if (!childId || !parentId) continue; // родитель не пережил рестарт — бригада не соберётся сама
-    const ok = await window.swarm.night.setParent(childId, parentId);
+    // keepAuto: забранный человеком исполнитель возвращается забранным, а не отданным заново.
+    const ok = await window.swarm.night.setParent(childId, parentId, true);
     if (ok) sessions.get(childId).parentId = parentId;
   }
   const first = sessions.keys().next();

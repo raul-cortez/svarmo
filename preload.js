@@ -269,7 +269,7 @@ contextBridge.exposeInMainWorld('swarm', {
     setTab:   (id, auto) => ipcRenderer.invoke('tab:setAuto', { id, auto }),
     // Родство: id вкладки живёт один запуск, поэтому сохранённое родство (по tabKey)
     // пересобирается ЗДЕСЬ, после restoreOrStart, а не передаётся при создании.
-    setParent: (id, parentId) => ipcRenderer.invoke('tab:setParent', { id, parentId }),
+    setParent: (id, parentId, keepAuto) => ipcRenderer.invoke('tab:setParent', { id, parentId, keepAuto: !!keepAuto }),
     // Кнопка капсулы «Сделать прорабом» — тот же путь, что пункт меню (диалог подтверждения
     // спрашивает main, окно только просит его открыть).
     makeProrab: (id) => ipcRenderer.invoke('tab:makeProrab', { id }),

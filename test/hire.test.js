@@ -130,6 +130,15 @@ test('parseAnswers и parseRequest читают один и тот же файл
   assert.strictEqual(HIRE.parseAnswers(raw).length, 1);
 });
 
+// --- parseHuman / parseAuto (мандат исполнителя тем же файлом) -------------------------------
+test('parseHuman/parseAuto: имена из своих полей, соседние не мешают', () => {
+  const raw = JSON.stringify({ human: ['#629', { name: '#630' }, '#629'], auto: ['#7'], release: ['#8'] });
+  assert.deepStrictEqual(HIRE.parseHuman(raw), ['#629', '#630']);
+  assert.deepStrictEqual(HIRE.parseAuto(raw), ['#7']);
+  assert.deepStrictEqual(HIRE.parseRelease(raw), ['#8']);
+  assert.deepStrictEqual(HIRE.parseHuman('не json'), []);
+});
+
 // --- parseRelease (прораб закрывает исполнителей тем же файлом) ----------------------------
 test('parseRelease: строки и объекты с name, без дублей и пустых', () => {
   const raw = JSON.stringify({ release: ['#629', { name: '#630' }, '#629', '', 5, null] });

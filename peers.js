@@ -132,7 +132,7 @@ function viewFor(rows, sid, tabId) {
   // строки в реестре уже нет (rows() мёртвых не пишет), и `parent` придёт пустым — сама вкладка
   // остаётся в бригаде и ждёт, реестр здесь только рассказывает.
   if (self.parentId) {
-    return { role: 'child', parentId: self.parentId, parent: rows[self.parentId] || null };
+    return { role: 'child', parentId: self.parentId, parent: rows[self.parentId] || null, auto: self.auto !== false };
   }
 
   // Прораб — видит свою бригаду и «свободных: N». Роль не снимается, даже когда живых детей
