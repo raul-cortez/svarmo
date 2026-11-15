@@ -456,6 +456,7 @@ const folderOrder = [];             // cwd keys in display order (folders + lone
 const withinOrder = new Map();      // cwd -> [session id, …] in display order
 let drag = null;                    // active drag: { kind: 'card'|'unit', id?, cwd }
 let dropped = false;                // whether the current drag committed a drop
+let dragEls = [];                   // what startDrag marked (source, ghost) — endDrag unmarks it even off-page
 
 // --- status ------------------------------------------------------------------
 // Status is inferred from the pty stream in main.js (see the detector there)
@@ -4886,6 +4887,10 @@ function lockDragHandles() {
   }
 }
 document.addEventListener('mouseup', lockDragHandles);
+// Страховка: перенос, чей dragend так и не дошёл, к новому нажатию мыши не доживает — во
+// время настоящего переноса mousedown не бывает, значит, прошлый уже кончился. Фаза погружения:
+// раньше, чем ручка карточки снова разрешит перетаскивание.
+document.addEventListener('mousedown', () => { if (drag || dragEls.length) endDrag(); }, true);
 
 function startDrag(e, payload) {
   drag = payload;
@@ -4895,14 +4900,25 @@ function startDrag(e, payload) {
   // The in-list element becomes a dashed empty slot; a card, or the whole group
   // for a folder drag. Deferred so the browser's drag image (what follows the
   // cursor) is captured with full content first — then it turns into the slot.
-  const ghost = payload.kind === 'unit' ? e.currentTarget.closest('.tab-group') : e.currentTarget;
-  const el = ghost || e.currentTarget;
+  const src = e.currentTarget;
+  const ghost = payload.kind === 'unit' ? src.closest('.tab-group') : src;
+  const el = ghost || src;
+  dragEls = [src, el];
   setTimeout(() => { if (drag) el.classList.add('dragging'); }, 0);
+  // Отпустили — и main тут же прислал новое родство (усыновление/вытаскивание из бригады):
+  // relayoutTabs снимает источник со страницы РАНЬШЕ, чем браузер шлёт dragend. Тогда dragend
+  // приходит отцепленному узлу и до document не всплывает — endDrag не звался, карточка
+  // оставалась пустым тёмным слотом (.dragging прячет всё внутри, вместе с ручкой) и
+  // возвращалась такой на доску. Поэтому ловим dragend и на самом источнике.
+  src.addEventListener('dragend', () => { if (!src.isConnected) endDrag(); }, { once: true });
 }
 
 function endDrag() {
   lockDragHandles();
   document.querySelectorAll('.dragging').forEach((el) => el.classList.remove('dragging'));
+  // Источник мог уйти со страницы (стал ребёнком бригады) — querySelectorAll его не видит.
+  for (const el of dragEls) { el.classList.remove('dragging'); if (el.draggable && !el.classList.contains('crew-chip')) el.draggable = false; }
+  dragEls = [];
   if (!dropped) relayoutTabs(); // drop didn't land — restore original order
   dropped = false;
   drag = null;
