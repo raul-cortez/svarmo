@@ -5393,7 +5393,7 @@ function crewLimitNote(id, d, untilMs) {
   const subName = d.subName || tabSubName(d, sessionHomes());
   const left = untilMs ? Math.max(0, Math.round((untilMs - Date.now()) / 60000)) : 0;
   const when = untilMs ? ` Сброс через ${left >= 60 ? `${Math.floor(left / 60)}ч${left % 60 ? `${left % 60}м` : ''}` : `${left}м`} — тогда разбужу его сам.` : '';
-  typeIntoTab(d.parentId, `[svarmo] Исполнитель «${d.name || id}» упёрся в лимит`
+  toProrab(d.parentId, `[svarmo] Исполнитель «${d.name || id}» упёрся в лимит`
     + `${subName ? ` подписки «${subName}»` : ' подписки'}.${when}`
     + ' Не ждёт — отпусти его ({"release": [...]}) и найми замену на другой подписке ("sub" в заявке).');
   tgLog(`бригада (лимит): вкладка ${id} упёрлась в лимит, сказал прорабу ${d.parentId}`);
@@ -5429,7 +5429,7 @@ function crewChildRenamed(id, d, oldName) {
   d.crewOldNames = [...(d.crewOldNames || []).filter((o) => o !== was), was].slice(-5);
   const parent = det.get(d.parentId);
   if (!parent || parent.dead) return;
-  typeIntoTab(d.parentId, `[svarmo] Человек переименовал исполнителя «${was}» в «${d.name}» — зови его`
+  toProrab(d.parentId, `[svarmo] Человек переименовал исполнителя «${was}» в «${d.name}» — зови его`
     + ' теперь так и в файле найма, и в разговоре с человеком.');
   tgLog(`бригада (имя): вкладка ${id} «${was}» → «${d.name}»`);
 }
@@ -6934,6 +6934,38 @@ function typeIntoTab(id, text) {
   return true;
 }
 
+// Служебные строки прорабу («Открыл», «Закрыл», лимит, потолок…). Прораб — вкладка человека: он
+// в ней печатает, и строка, напечатанная поверх его недописанного, уходила одним Enter вместе с
+// ним — каша из двух сообщений (16.11). Поэтому строки копятся в почтовом ящике прораба и
+// печатаются, только когда в строке ввода нет черновика человека, а на экране нет рамки выбора
+// или запроса разрешения (печать туда выбрала бы вариант). Несколько строк — одним сообщением.
+//
+// Черновик узнаём по клавиатуре, а не по экрану: в снимке экрана серая подсказка Клода («Try …»)
+// неотличима от набранного. typedAtKeyboard — человек печатал и ещё не отправил; экран здесь
+// только подтверждает, что поле не опустело (стёр набранное — значит, черновика нет).
+const PRORAB_TYPING_QUIET_MS = 4000;    // человек только что нажимал клавиши — не влезаем
+function toProrab(pid, text) {
+  const key = String(pid == null ? '' : pid);
+  const d = det.get(key);
+  if (!d || d.dead || !text) return false;
+  (d.prorabInbox = d.prorabInbox || []).push(String(text));
+  prorabInboxTick(key, d, Date.now());
+  return true;
+}
+function prorabHasDraft(id, d, now) {
+  if (now - (d.inputAt || 0) < PRORAB_TYPING_QUIET_MS) return true;
+  if (!d.typedAtKeyboard) return false;
+  return inputState(id, '') !== 'empty';
+}
+function prorabInboxTick(id, d, now) {
+  if (!d.prorabInbox || !d.prorabInbox.length || d.dead) return;
+  if (d.waitingBox || (d.status === 'waiting' && d.waitingKind === 'permission')) return;
+  if (prorabHasDraft(id, d, now)) return;
+  const text = d.prorabInbox.join('\n\n');
+  d.prorabInbox = [];
+  typeIntoTab(id, text);
+}
+
 // Живых детей бригады — тех, чей процесс ещё жив. Мёртвая вкладка место в потолке не занимает:
 // человек намерен видеть его свободным, не разбираясь, что там закрылось само.
 function crewLiveChildren(prorabId) {
@@ -6996,14 +7028,14 @@ function hireTick(id, d) {
       typeIntoTab(cid, a.text);
       tgLog(`бригада (ответ): прораб ${id} ответил «${a.name}»`);
     } else {
-      typeIntoTab(id, `[svarmo] Не нашёл в бригаде «${a.name}» — ответ не доставлен.`);
+      toProrab(id, `[svarmo] Не нашёл в бригаде «${a.name}» — ответ не доставлен.`);
     }
   }
   // Мандат исполнителей: отдать человеку / вернуть в бригаду — та же дверь, что меню пилюли.
   for (const [names, on] of [[hire.parseHuman(raw), false], [hire.parseAuto(raw), true]]) {
     for (const name of names) {
       const cid = findCrewChildByName(id, name);
-      if (!cid) { typeIntoTab(id, `[svarmo] Не нашёл в бригаде «${name}» — мандат не поменял.`); continue; }
+      if (!cid) { toProrab(id, `[svarmo] Не нашёл в бригаде «${name}» — мандат не поменял.`); continue; }
       setTabAuto(cid, on, 'прораб');
     }
   }
@@ -7014,7 +7046,7 @@ function hireTick(id, d) {
     const cid = findCrewChildByName(id, name);
     const c = cid && det.get(cid);
     if (!c || c.crewClosing) {
-      typeIntoTab(id, `[svarmo] Не нашёл в бригаде «${name}» — закрывать некого.`);
+      toProrab(id, `[svarmo] Не нашёл в бригаде «${name}» — закрывать некого.`);
       continue;
     }
     c.crewClosing = true;
@@ -7024,7 +7056,7 @@ function hireTick(id, d) {
     safeSend('crew:closeTabs', { ids: released });
     const names = released.map((cid) => `«${det.get(cid).name || cid}»`).join(', ');
     tgLog(`бригада (прораб ${id}): отпускаю ${names}`);
-    typeIntoTab(id, `[svarmo] Закрыл ${names}.`);
+    toProrab(id, `[svarmo] Закрыл ${names}.`);
   }
   const entries = hire.parseRequest(raw);
   if (!entries.length) return;
@@ -7038,7 +7070,7 @@ function hireTick(id, d) {
   for (const entry of entries) {
     const key = entry.name.trim().toLowerCase();
     if (findCrewChildByName(id, entry.name) || pending.has(key) || fresh.some((e) => e.name.trim().toLowerCase() === key)) {
-      typeIntoTab(id, `[svarmo] «${entry.name}» уже в бригаде — второй раз не открываю. Нужна ещё одна`
+      toProrab(id, `[svarmo] «${entry.name}» уже в бригаде — второй раз не открываю. Нужна ещё одна`
         + ' вкладка — назови её иначе; нужно дать этой новую задачу — пришли её ответом ({"answer": …}).');
       continue;
     }
@@ -7063,7 +7095,7 @@ function hireTick(id, d) {
       safeSend('crew:closeTabs', { ids: done.map(([cid]) => cid) });
       const names = done.map(([cid, c]) => `«${c.name || cid}»`).join(', ');
       tgLog(`найм (прораб ${id}): потолок — закрываю закончивших ${names}`);
-      typeIntoTab(id, `[svarmo] Потолок бригады (${CREW_MAX}): закрыл закончивших ${names} —`
+      toProrab(id, `[svarmo] Потолок бригады (${CREW_MAX}): закрыл закончивших ${names} —`
         + ' на их место открываю новых.');
     }
   }
@@ -7075,7 +7107,7 @@ function hireTick(id, d) {
     const card = entry.sub ? subCardByName(entry.sub) : null;
     if (entry.sub && !card) {
       const names = subsCardsNow.map((c) => c.name).filter(Boolean);
-      typeIntoTab(id, `[svarmo] «${entry.name}» не открыл: подписки «${entry.sub}» нет.`
+      toProrab(id, `[svarmo] «${entry.name}» не открыл: подписки «${entry.sub}» нет.`
         + (names.length ? ` Есть: ${names.map((n) => `«${n}»`).join(', ')}.` : ' Имён у подписок в настройках нет.'));
       continue;
     }
@@ -7090,7 +7122,7 @@ function hireTick(id, d) {
   // строкой из session:create, как только у вкладки появится sessionKey (см. там): раньше
   // этого момента Svarmo сам не знает, каким именем её назовут в списке агентов.
   if (skipped > 0) {
-    typeIntoTab(id, `[svarmo] Потолок бригады (${CREW_MAX}) не пускает ещё ${skipped}: все исполнители`
+    toProrab(id, `[svarmo] Потолок бригады (${CREW_MAX}) не пускает ещё ${skipped}: все исполнители`
       + ' заняты — работают или ждут ответа. Как кто-то закончит, пришли заявку снова: закончившего'
       + ' я закрою сам и открою нового на его место.');
   }
@@ -7128,7 +7160,7 @@ function crewFreeTick(now) {
     if (now - d.crewIdleSince < CREW_FREE_GRACE_MS) continue;
     d.crewIdleSince = 0;
     tgLog(`бригада (освобождение): вкладка ${id} простаивала — закрываю (настройка «сама»)`);
-    typeIntoTab(d.parentId, `[svarmo] Закрыл свободного исполнителя «${d.name || id}» — в настройках`
+    toProrab(d.parentId, `[svarmo] Закрыл свободного исполнителя «${d.name || id}» — в настройках`
       + ' бригады «Освободившаяся вкладка» стоит «закрывается сама».');
     safeSend('crew:closeTabs', { ids: [id] });
   }
@@ -7141,6 +7173,12 @@ setInterval(() => {
     if (!d || d.dead || !d.crew) continue;
     if (geoTabBlocked(d)) continue;          // замороженный прораб не нанимает
     try { hireTick(id, d); } catch (e) { reportMainError(e); }
+  }
+  for (const id of sessions.keys()) {
+    const d = det.get(id);
+    if (d && d.prorabInbox && d.prorabInbox.length) {
+      try { prorabInboxTick(id, d, now); } catch (e) { reportMainError(e); }
+    }
   }
   try { hireFireTick(now); } catch (e) { reportMainError(e); }
   try { crewFreeTick(now); } catch (e) { reportMainError(e); }
@@ -7175,7 +7213,7 @@ async function makeProrab(id, from) {
   tgLog(`прораб (${from || '—'}): вкладка ${key}`);
   tgWriteModes();
   safeSend('tab:crew', { id: key, crew: true });
-  typeIntoTab(key, hire.prorabIntro(file, CREW_MAX));
+  toProrab(key, hire.prorabIntro(file, CREW_MAX));
   return true;
 }
 
@@ -7210,7 +7248,7 @@ async function closeCrewDialog(id, from) {
   if (choice === 'Попросить прораба свернуться') {
     // Ничего не закрывает — пишет прорабу: раз человек общается только с ним, это самое
     // честное действие в этом окне (спека). Кнопка гаснет, если прораб мёртв — просить некого.
-    typeIntoTab(key, '[svarmo] Человек просит закрыть бригаду целиком: доведи детей до коммита и'
+    toProrab(key, '[svarmo] Человек просит закрыть бригаду целиком: доведи детей до коммита и'
       + ' отпусти их — {"release": [...]} в файле найма, — а когда закончишь, скажи человеку: тебя'
       + ' он закроет сам.');
     tgLog(`бригада (${from || '—'}): вкладка ${key} — попросили прораба свернуться`);
@@ -8507,7 +8545,7 @@ ipcMain.handle('session:create', (_event, opts = {}) => {
             + ' но после её перезапуска оно сменится — свежее всегда в реестре соседей'
             + ` (${path.join(app.getPath('userData'), 'swarm-tabs.json')}), строка с tab «${label}». Не запоминай его.`
           : '';
-        typeIntoTab(String(opts.parentId), `[svarmo] Открыл «${label}». Зови её только так — в файле`
+        toProrab(String(opts.parentId), `[svarmo] Открыл «${label}». Зови её только так — в файле`
           + ` найма и в разговоре с человеком: это имя он видит на карточке.${agent}`);
       }
     }
