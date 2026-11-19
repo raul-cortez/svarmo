@@ -1043,6 +1043,80 @@ test('просьба на пороге с досье называет файл �
   assert.ok(!/без handoff/.test(t));
 });
 
+// --- подтверждение перезапуска (жалоба 19.11: исполнитель не поднялся, а прораб думает, что работает)
+const T0 = 1_000_000;
+function cs(over) {
+  return R.confirmStep({ now: T0 + 30_000, firedAt: T0, attempt: 1, hello: false, work: false,
+    agent: true, lull: false, inputFree: true, screen: '', ...over });
+}
+
+test('сделка: агент в оболочке есть, но хуков свежей сессии нет — это НЕ «всё в порядке»', () => {
+  // Прежняя проверка смотрела только на процесс в оболочке и успокаивалась. Здесь он есть,
+  // а сессия так и не отметилась за окно — вкладка должна стать «не поднялся», а не «готов».
+  const r = cs({ now: T0 + R.CONFIRM_MS, agent: true, hello: false,
+    screen: 'Do you trust the files in this folder?\n❯ 1. Yes, proceed\n  2. No, exit' });
+  assert.strictEqual(r.verdict, 'failed');
+  assert.strictEqual(r.cause, 'stuck');
+  assert.ok(/встал до начала разговора/.test(r.reason));
+  assert.ok(/trust the files|Yes, proceed|No, exit/.test(r.reason), r.reason);
+});
+
+test('сделка: признак хода свежей сессии — подтверждён, когда бы ни пришёл', () => {
+  assert.strictEqual(cs({ work: true, now: T0 + 1000 }).verdict, 'confirmed');
+  assert.strictEqual(cs({ work: true, hello: true, attempt: 2, now: T0 + 10 * R.CONFIRM_MS }).verdict, 'confirmed');
+  // и даже если оболочка уже пуста (ход случился, потом агент вышел) — сделка состоялась
+  assert.strictEqual(cs({ work: true, agent: false }).verdict, 'confirmed');
+});
+
+test('сделка: рано судить — ждём', () => {
+  assert.strictEqual(cs({ now: T0 + 5000, agent: false }).verdict, 'wait');
+  assert.strictEqual(cs({ now: T0 + 30_000, agent: true }).verdict, 'wait');
+  assert.strictEqual(cs({ now: T0 + 30_000, agent: true, hello: true }).verdict, 'wait');
+  assert.strictEqual(cs({ now: T0 + 30_000, agent: undefined }).verdict, 'wait');
+});
+
+test('сделка: пустая оболочка — повтор проще, без промпта в строке; на второй — сдаёмся', () => {
+  const r1 = cs({ now: T0 + R.BARE_MS, agent: false, screen: "error: unknown option '--modle'\n%" });
+  assert.deepStrictEqual([r1.verdict, r1.way], ['retry', 'plain']);
+  const r2 = cs({ now: T0 + R.BARE_MS, agent: false, attempt: 2, screen: "error: unknown option '--modle'\n%" });
+  assert.strictEqual(r2.verdict, 'failed');
+  assert.strictEqual(r2.cause, 'bare');
+  assert.ok(/unknown option/.test(r2.reason), r2.reason);
+});
+
+test('сделка: лимит и вход повтором не лечатся — сразу «не поднялся» с причиной', () => {
+  const lim = cs({ now: T0 + R.BARE_MS, agent: false, screen: "Claude usage limit reached. Your limit will reset at 5pm\n%" });
+  assert.deepStrictEqual([lim.verdict, lim.cause], ['failed', 'limit']);
+  const auth = cs({ now: T0 + R.CONFIRM_MS, agent: true, hello: true, screen: 'Invalid API key · Please run /login' });
+  assert.deepStrictEqual([auth.verdict, auth.cause], ['failed', 'auth']);
+});
+
+test('сделка: сессия отметилась, а промпт не пошёл — допечатать в поле; рамка на экране — нет', () => {
+  const r = cs({ now: T0 + R.CONFIRM_MS, hello: true });
+  assert.deepStrictEqual([r.verdict, r.way], ['retry', 'nudge']);
+  // Клод сам сказал «жду ввода» — не ждём остаток минуты
+  assert.strictEqual(cs({ now: T0 + R.BARE_MS, hello: true, lull: true }).way, 'nudge');
+  // поле занято рамкой — печать выбрала бы вариант; честнее сдаться
+  const boxed = cs({ now: T0 + R.CONFIRM_MS, hello: true, inputFree: false });
+  assert.deepStrictEqual([boxed.verdict, boxed.cause], ['failed', 'silent']);
+  // после допечатки опять тишина — вторая попытка исчерпана
+  assert.strictEqual(cs({ now: T0 + R.CONFIRM_MS, hello: true, attempt: 2 }).verdict, 'failed');
+});
+
+test('сделка: больше двух попыток не бывает', () => {
+  for (const over of [{ agent: false }, { hello: true }, {}]) {
+    const r = cs({ ...over, now: T0 + R.CONFIRM_MS, attempt: R.MAX_ATTEMPTS });
+    assert.strictEqual(r.verdict, 'failed', JSON.stringify(over));
+  }
+});
+
+test('причина с экрана — слова, без рамок и пустых приглашений', () => {
+  const why = R.screenReason('╭────────╮\n│ Login expired │\n╰────────╯\n❯ \n\n');
+  assert.strictEqual(why, 'Login expired');
+  assert.ok(R.screenReason('x'.repeat(500)).length <= 160);
+  assert.strictEqual(R.failText('bare', ''), 'агент не запустился — вкладка осталась пустой оболочкой');
+});
+
 for (const [name, fn] of tests) {
   try { fn(); passed++; } catch (e) {
     console.error(`FAIL ${name}\n  ${e.message}`);

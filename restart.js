@@ -847,6 +847,106 @@
     return arg ? b + ' ' + arg : b;
   }
 
+  // --- подтверждение перезапуска -----------------------------------------------------------
+  // Перезапуск — сделка, а не выстрел. Напечатать строку в оболочку мало: Клод может не
+  // стартовать вовсе (битый флаг, лимит, слетел вход), а может стартовать и встать — на своём
+  // диалоге, с неотправленным промптом. Снаружи оба случая выглядели как «готов», и прораб
+  // считал исполнителя работающим, пока тот стоял как вкопанный (жалоба 19.11).
+  //
+  // Состоявшимся перезапуск считается по сигналам СВЕЖЕЙ сессии, а не по экрану: SessionStart
+  // с её id (hello) и затем любой признак хода (промпт ушёл, инструмент, конец хода, вопрос).
+  // Экран — только подсказка причины, когда подтверждения нет.
+  //
+  // Окно — по живым замерам (стенограммы перезапусков 18–19.11): от печати строки до первого
+  // сообщения в разговоре 1–13 с. Минута — с запасом вчетверо, но не настолько долго, чтобы
+  // прораб успел решить, что исполнитель работает.
+  const CONFIRM_MS = 60 * 1000;
+  // Голую оболочку видно раньше: процесса агента нет — ждать минуту незачем. Те же 20 с, что
+  // стояли у прежней проверки «доехал ли запуск».
+  const BARE_MS = 20 * 1000;
+  // Попыток всего две: исходная и одна другим путём. Третья тем же набором путей ничего нового
+  // не даст, а вкладка всё это время выглядит живой.
+  const MAX_ATTEMPTS = 2;
+
+  // Стены, о которые повтор разобьётся точно так же: лимит подписки и слетевший вход. Тут
+  // честнее сразу сказать «не поднялся» с причиной, чем тратить вторую попытку.
+  const LIMIT_RE = /usage limit|limit reached|rate limit|hit your (?:usage )?limit|limit will reset/i;
+  const AUTH_RE = /please run \/login|not logged in|logged out|log ?in again|invalid api key|authenticat|oauth token|\b401\b/i;
+
+  // Последние осмысленные строки экрана — причина словами для человека и прораба. Рамки и
+  // пустые строки снимаем: от диалога Клода остаются его слова, а не псевдографика.
+  function screenReason(screen, max) {
+    const lim = max || 160;
+    const lines = String(screen || '').split(/\r?\n/)
+      .map((l) => l.replace(/[│┃║╭╮╰╯─━═┌┐└┘├┤┬┴┼╔╗╚╝▐▛▜▌▝▘█]/g, ' ').replace(/\s+/g, ' ').trim())
+      .filter((l) => l && !/^[>❯$%#]\s*$/.test(l) && /[\p{L}\p{N}]/u.test(l));
+    const tail = lines.slice(-2).join(' · ');
+    return tail.length > lim ? tail.slice(0, lim - 1).trimEnd() + '…' : tail;
+  }
+
+  function wallOf(screen) {
+    const s = String(screen || '');
+    if (LIMIT_RE.test(s)) return 'limit';
+    if (AUTH_RE.test(s)) return 'auth';
+    return '';
+  }
+
+  // Причина неудачи словами — по продукту, без внутренностей. `cause` от confirmStep.
+  function failText(cause, screen) {
+    const base = {
+      bare: 'агент не запустился — вкладка осталась пустой оболочкой',
+      silent: 'агент запустился, но к работе не приступил',
+      stuck: 'агент запустился, но встал до начала разговора',
+      limit: 'упёрся в лимит подписки',
+      auth: 'слетел вход в подписку',
+    }[cause] || 'не поднялся';
+    const why = screenReason(screen);
+    return why ? `${base}: ${why}` : base;
+  }
+
+  // Шаг сделки. Решение одно на вызов, main.js только исполняет:
+  //   confirmed — свежая сессия отметилась и пошла работать;
+  //   wait      — рано судить;
+  //   retry     — попытка не удалась, вторая — другим путём (`way`):
+  //               'plain' — оболочка пуста: запустить проще (без промпта и модели в строке),
+  //                         а промпт допечатать, когда сессия отметится. Та же строка упала бы
+  //                         так же — а битым в ней бывает именно хвост: модель, длинный промпт;
+  //               'nudge' — агент жив и отметился, но промпт не пошёл: допечатать его в поле;
+  //   failed    — сдаёмся: вкладка «не поднялся», причина `cause`.
+  //
+  // Вход: { now, firedAt, attempt (1 — исходная), hello, work, agent (true — процесс есть,
+  // false — оболочка пуста, undefined — не узнали), lull (агент сам сказал, что ждёт ввода),
+  // inputFree (поле ввода пусто, рамок нет — печатать можно), screen }.
+  //
+  // ⛔ Работающего не трогаем: любой признак хода — подтверждение, даже если пришёл на второй
+  // минуте и после повтора.
+  function confirmStep(s) {
+    const st = s || {};
+    if (st.work) return { verdict: 'confirmed' };
+    const elapsed = (Number(st.now) || 0) - (Number(st.firedAt) || 0);
+    if (elapsed < BARE_MS) return { verdict: 'wait' };
+    const last = (Number(st.attempt) || 1) >= MAX_ATTEMPTS;
+    const wall = wallOf(st.screen);
+    const give = (cause) => ({ verdict: 'failed', cause, reason: failText(cause, st.screen) });
+    if (st.agent === false) {
+      // Оболочка пуста — Клода нет. Лимит и вход повтором не лечатся.
+      if (wall) return give(wall);
+      return last ? give('bare') : { verdict: 'retry', way: 'plain', cause: 'bare' };
+    }
+    if (st.hello) {
+      // Сессия поднялась, а хода нет. Сам Клод говорит «жду ввода» (lull) — значит, промпт
+      // не дошёл, и ждать дальше незачем.
+      if (!st.lull && elapsed < CONFIRM_MS) return { verdict: 'wait' };
+      if (wall) return give(wall);
+      if (last || !st.inputFree) return give('silent');
+      return { verdict: 'retry', way: 'nudge', cause: 'silent' };
+    }
+    if (elapsed < CONFIRM_MS) return { verdict: 'wait' };
+    // Процесс есть, а сессии нет: Клод стоит на своём экране до начала разговора — вход,
+    // доверие к папке, обновление. Такой диалог ждёт человека, и та же строка приведёт к нему же.
+    return give(wall || 'stuck');
+  }
+
   return {
     MIN_PCT, MAX_PCT, DEFAULT_PCT, AGGRESSIVE_MULT, MIN_UPTIME_MS, RETRY_MS, ANSWER_WAIT_MS,
     MAX_SILENT, PENDING_MS, EXIT_BLIND_MS, GONE_GAP_MS, GRANT_WAIT_MS, GRANT_CALM_MS, RETRY_MIN_MS,
@@ -861,5 +961,8 @@
     turnOver,
     // И причина простоя словами: решение принимает автомат, печатает main.
     holdText,
+    // Подтверждение перезапуска: сделка вместо выстрела.
+    CONFIRM_MS, BARE_MS, MAX_ATTEMPTS,
+    confirmStep, screenReason, failText,
   };
 });
