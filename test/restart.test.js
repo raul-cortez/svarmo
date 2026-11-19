@@ -1115,6 +1115,22 @@ test('причина с экрана — слова, без рамок и пус
   assert.strictEqual(why, 'Login expired');
   assert.ok(R.screenReason('x'.repeat(500)).length <= 160);
   assert.strictEqual(R.failText('bare', ''), 'агент не запустился — вкладка осталась пустой оболочкой');
+  assert.strictEqual(R.screenReason("error: unknown option '--modle'\nevgeniy@mac fastio % "), "error: unknown option '--modle'");
+});
+
+test('причину ищем ниже нашей строки запуска: слова промпта — не ответ Клода', () => {
+  const screen = [
+    "evgeniy@mac fastio % claude --session-id 0b79c253-8cf0 'упёрся в usage limit, продолжи по",
+    " файлу работы'",
+    'zsh: command not found: claude',
+    'evgeniy@mac fastio % ',
+  ].join('\n');
+  const tail = R.afterLaunch(screen, ['0b79c253-8cf0', 'продолжи по файлу работы'.slice(-12)]);
+  assert.ok(!/usage limit/.test(tail), tail);
+  const r = cs({ now: T0 + R.BARE_MS, agent: false, screen: tail });
+  assert.deepStrictEqual([r.verdict, r.way], ['retry', 'plain']);
+  // меток нет — экран целиком
+  assert.strictEqual(R.afterLaunch('a\nb', []), 'a\nb');
 });
 
 for (const [name, fn] of tests) {

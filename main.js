@@ -920,6 +920,10 @@ function ctxFillOf(d, line) {
 //     давал агент прошлого разговора и про свою работу — новому оно не принадлежит.
 function newConversation(id, d, prev) {
   d.ctxPct = null;
+  // Сделка перезапуска была про наш разговор. Человек поднял свой (`claude` руками, /resume) —
+  // судить его по нашей отметке нельзя, а «не поднялся» с вкладки снимаем: в ней снова агент.
+  d.rsConfirm = null;
+  restartFailClear(id, d, 'в ней новый разговор');
   d.statusline = '';          // пусто ≠ прежней строке, значит следующий такт пересчитает
   restartClearPending(d);
   d.rs = restart.initial();
@@ -970,6 +974,11 @@ function feedDetector(id, chunk) {
     // команды. Здесь только запоминаем; кому файл принадлежит, решает bindTranscript.
     if (sig.transcript && sig.transcript !== d.trHint) d.trHint = sig.transcript;
     applyHook(d, sig.token, Date.now());
+    // Когда вкладка последний раз ДЕЙСТВОВАЛА — по хукам, а не по экрану. Это видит прораб в
+    // своей бригаде: «работает» только у того, кто недавно подавал признаки жизни.
+    d.actAt = Date.now();
+    if (d.rsConfirm) restartConfirmSignal(id, d, sig);
+    else if (d.restartFailed && RESTART_WORK_TOKENS.has(sig.token)) restartFailClear(id, d, 'ожил');
   }
   // A resize makes Claude repaint the whole screen — a burst of output that is
   // NOT real work. Inside the grace window after a resize we keep feeding the
@@ -7867,6 +7876,157 @@ function restartVerify(id, d) {
   });
 }
 
+// --- перезапуск как сделка -----------------------------------------------------------------
+// Строку напечатали — это ещё не перезапуск. Состоялся он, только когда СВЕЖАЯ сессия отметилась
+// своими хуками: SessionStart с её id и следом признак хода (промпт ушёл, инструмент, конец хода).
+// Нет отметки за окно — вторая попытка другим путём; нет и после неё — вкладка красная «не
+// поднялся», человеку уведомление, прорабу строка. Решение — restart.confirmStep, здесь только
+// исполнение. Жалоба 19.11: «работник бригады не смог перезапуститься и стоит как вкопанный, а
+// прораб думает, что он работает».
+//
+// Признаки хода — все токены хука, кроме самого приветствия и «жду ввода»: промпт, инструмент,
+// конец хода, вопрос, разрешение, сабагент. Любой из них значит, что эстафета дошла и работа пошла.
+const RESTART_WORK_TOKENS = new Set(['busy', 'idle', 'perm', 'box', 'ask', 'nag', 'bgw', 'sub', 'subend']);
+const RESTART_CONFIRM_TICK_MS = 5_000;
+// Допечатка промпта после отметки сессии: поле ввода Клода появляется чуть позже SessionStart,
+// а typeIntoTab сам дождётся поля, если экран ещё рисуется.
+const RESTART_TYPE_AFTER_HELLO_MS = 1_500;
+
+// Судить по хукам можно, только когда они есть: хуки поставлены и id нового разговора выбрали мы
+// (его и ждём в отметке). Иначе — прежняя проверка по процессу (restartVerify).
+function restartCanConfirm(sessionId) {
+  return !!(sessionId && HOOKS_ENABLED && HOOK_COMMAND);
+}
+
+// key и model — ярлык разговора и модель, названная агентом: круг перезапуска их к повтору
+// может уже стереть (restartClearPending), а второй попытке они нужны.
+function restartDeal(sessionId, prompt, attempt, typeOnHello, key, model) {
+  return {
+    sessionId, prompt: String(prompt || ''), attempt, key: key || '', model: model || '',
+    firedAt: Date.now(), hello: false, work: false, lull: false,
+    typeOnHello: String(typeOnHello || ''),
+  };
+}
+
+function restartConfirmSignal(id, d, sig) {
+  const c = d.rsConfirm;
+  if (!c || !sig.sessionId || sig.sessionId !== c.sessionId) return;
+  const now = Date.now();
+  if (sig.token === 'hello') {
+    if (!c.hello) {
+      c.hello = true;
+      restartLog(`вкладка ${id}: свежая сессия отметилась за ${Math.round((now - c.firedAt) / 1000)} с`);
+    }
+    if (c.typeOnHello) {
+      const text = c.typeOnHello;
+      c.typeOnHello = '';
+      setTimeout(() => {
+        if (d.rsConfirm !== c || c.work || d.dead) return;
+        typeIntoTab(id, text);
+        restartLog(`вкладка ${id}: допечатал задачу в поле свежей сессии`);
+      }, RESTART_TYPE_AFTER_HELLO_MS);
+    }
+    return;
+  }
+  if (sig.token === 'lull') { c.lull = true; return; }
+  if (!RESTART_WORK_TOKENS.has(sig.token)) return;
+  c.work = true;
+  d.rsConfirm = null;
+  restartLog(`вкладка ${id}: перезапуск подтверждён — свежая сессия работает`
+    + ` (${Math.round((now - c.firedAt) / 1000)} с${c.attempt > 1 ? `, попытка ${c.attempt}` : ''})`);
+  restartFailClear(id, d, 'ожил');
+}
+
+function restartConfirmTick(id, d, now) {
+  const c = d.rsConfirm;
+  if (!c) return;
+  let screen = '';
+  try { screen = snapshot(d); } catch (_) { screen = ''; }
+  const tail = restart.afterLaunch(screen, [c.sessionId, c.prompt.slice(-12)]);
+  const field = inputState(id, c.prompt);
+  const r = restart.confirmStep({
+    now, firedAt: c.firedAt, attempt: c.attempt,
+    hello: c.hello, work: c.work, lull: c.lull,
+    agent: d.shellBusy,
+    inputFree: !d.waitingBox && (field === 'empty' || field === 'ours'),
+    screen: tail,
+  });
+  if (r.verdict === 'wait' || r.verdict === 'confirmed') return;
+  if (r.verdict === 'retry' && r.way === 'plain' && restartRetryPlain(id, d, c)) return;
+  if (r.verdict === 'retry' && r.way === 'nudge') { restartRetryNudge(id, d, c, field); return; }
+  const reason = r.reason || restart.failText(r.cause || 'bare', tail);
+  restartFailNow(id, d, reason);
+}
+
+// Вторая попытка, когда оболочка пуста: та же строка упадёт так же, поэтому проще — без промпта
+// и без модели, которую назвал агент (битым в строке бывает именно хвост), а задачу допечатаем
+// в поле, когда сессия отметится. Новый id разговора — как у любого запуска.
+function restartRetryPlain(id, d, c) {
+  if (!sessions.has(id) || d.shellBusy !== false) return false;
+  let base = String(d.launchCmd || '');
+  if (c.model) base = base.replace(/\s--model(=|\s+)[^\s]+/g, '');
+  const built = restartLaunchLine(base, c.key, d.mode, '');
+  if (!built.cmd || !built.sessionId) return false;
+  ptyType(id, clearPrefix(pickShell()) + built.cmd + '\r');
+  d.claudeSessionId = built.sessionId;
+  tgWriteModes();
+  safeSend('session:claude', { id, claudeSessionId: d.claudeSessionId });
+  trForget(d);
+  d.trHint = '';
+  applyTranscript(d, null);
+  d.launchAt = Date.now();
+  d.launchPid = null;
+  d.rsConfirm = restartDeal(built.sessionId, c.prompt, c.attempt + 1, c.prompt, c.key, '');
+  restartNote(id, 'свежая сессия не поднялась — пробую ещё раз, проще: без задачи в строке запуска,'
+    + ' задачу допечатаю, когда поднимется');
+  return true;
+}
+
+// Вторая попытка, когда агент жив и отметился, а работы нет: промпт не дошёл. Допечатываем его
+// в поле; если он там уже стоит неотправленным — просто отправляем.
+function restartRetryNudge(id, d, c, field) {
+  if (field === 'ours') ptyType(id, '\r');
+  else typeIntoTab(id, c.prompt || restart.PROMPT_CARRIED);
+  d.rsConfirm = { ...c, attempt: c.attempt + 1, firedAt: Date.now(), lull: false, typeOnHello: '' };
+  restartNote(id, 'свежая сессия поднялась, но к работе не приступила — '
+    + (field === 'ours' ? 'отправляю задачу, которая стояла в поле' : 'допечатываю задачу в поле'));
+}
+
+// Сдались: обе попытки не дали отметки. Вкладка — красная «не поднялся» с причиной, человеку
+// уведомление (рендерер, по обычным правилам), прорабу — строка, если вкладка из его бригады.
+function restartFailNow(id, d, reason) {
+  d.rsConfirm = null;
+  d.restartFailed = { reason, at: Date.now() };
+  restartNote(id, `не поднялся после перезапуска — ${reason}`);
+  safeSend('session:restartFailed', { id, label: `не поднялся после перезапуска: ${reason}` });
+  if (d.parentId) {
+    toProrab(d.parentId, `[svarmo] Исполнитель «${d.name || id}» не поднялся после перезапуска: ${reason}.`
+      + ' Он не работает — подними его сам или отпусти ({"release": [...]}) и найми замену.');
+  }
+  writeTabsMap();
+}
+
+// Отметка «не поднялся» снимается, как только в вкладке снова есть живой агент.
+function restartFailClear(id, d, why) {
+  if (!d.restartFailed) return;
+  d.restartFailed = null;
+  if (why) restartLog(`вкладка ${id}: снимаю «не поднялся» — ${why}`);
+  writeTabsMap();
+}
+
+// Реестр пишется по смене статуса, а «когда действовал» (actAt) идёт и без неё: исполнитель
+// полчаса гоняет инструменты в одном статусе «работает». Раз в полминуты — дописать; файл
+// трогаем, только если что-то поменялось (writeTabsMap сравнивает тело).
+setInterval(() => { try { writeTabsMap(); } catch (e) { reportMainError(e); } }, 30_000);
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, d] of det) {
+    if (!d || d.dead || !d.rsConfirm) continue;
+    try { restartConfirmTick(id, d, now); } catch (e) { reportMainError(e); }
+  }
+}, RESTART_CONFIRM_TICK_MS);
+
 // Напечатать заготовленный запуск в освободившуюся оболочку. Отдельно от session:relaunch,
 // потому что зовут отсюда двое: сам перезапуск и тик, если агент вышел позже, чем мы ждали.
 function restartFire(id, d) {
@@ -7874,9 +8034,11 @@ function restartFire(id, d) {
   const line = d.rsPendingLine || '';
   const sessionId = d.rsPendingSession || null;
   const base = d.rsPendingBase || '';
+  const prompt = d.rsPendingPrompt || '';
   d.rsPendingLine = '';
   d.rsPendingBase = '';
   d.rsPendingSession = null;
+  d.rsPendingPrompt = '';
   d.rsSignalled = false;      // круг закончен, см. restartClearPending
   d.rsKillPid = null;
   d.rsShellBusy = undefined;
@@ -7935,7 +8097,17 @@ function restartFire(id, d) {
   d.sessionStartAt = Date.now();
   d.launchAt = Date.now();
   d.launchPid = null;
-  d.rsCheckAt = Date.now() + RESTART_CHECK_MS;   // а доехал ли запуск, см. restartVerify
+  // Доехал ли запуск. С хуками и своим id разговора — сделкой: ждём отметки свежей сессии
+  // (restartConfirmTick). Без них (запускатель не Клод, хуки не поставлены) — по-старому, по
+  // процессу в оболочке через 20 с.
+  if (restartCanConfirm(sessionId)) {
+    d.rsConfirm = restartDeal(sessionId, prompt, 1, '', d.rsKey || '', d.rsModel || '');
+    d.rsCheckAt = 0;
+  } else {
+    d.rsConfirm = null;
+    d.rsCheckAt = Date.now() + RESTART_CHECK_MS;   // см. restartVerify
+  }
+  restartFailClear(id, d);
   d.restarts = (d.restarts || 0) + 1;
   // Автомат начинает с чистого листа: у свежей сессии ни висящего вопроса, ни счётчика молчания,
   // ни немоты. Одной строкой вместо шести — раньше забыть одну из них было отдельным способом
@@ -7980,6 +8152,9 @@ ipcMain.handle('session:relaunch', (_e, opts = {}) => {
   d.rsPendingLine = line;
   d.rsPendingBase = built.cmd;
   d.rsPendingSession = built.sessionId || null;
+  // Промпт — ради второй попытки: если свежая сессия не отметится, повтор поедет другим путём
+  // (простой строкой или допечаткой в поле), и задачу надо будет отдать ей заново.
+  d.rsPendingPrompt = String(opts.prompt || '');
   d.rsKey = String(opts.sessionKey || '') || null;
   // Тот же ярлык, но не стирается в конце круга (см. restartClearPending) — d.sessionKey живёт
   // всю вкладку и уходит в writeTabsMap. Обновляем, только если рендерер его прислал: рестарт

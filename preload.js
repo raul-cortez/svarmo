@@ -60,6 +60,14 @@ contextBridge.exposeInMainWorld('swarm', {
   },
 
 
+  // Перезапуск не состоялся: свежая сессия не отметилась и после второй попытки
+  // (main.js: restartFailNow). cb({ id, label }). Возвращает отписку.
+  onRestartFailed: (cb) => {
+    const handler = (_e, payload) => cb(payload);
+    ipcRenderer.on('session:restartFailed', handler);
+    return () => ipcRenderer.removeListener('session:restartFailed', handler);
+  },
+
   // Агент ушёл из живой оболочки — упал сам или вышел (main.js: agentGone).
   // cb({ id, how, why, word, label, reset, resumeId, canResume }). Возвращает отписку.
   onAgentGone: (cb) => {

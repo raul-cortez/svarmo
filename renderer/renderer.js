@@ -1282,6 +1282,26 @@ window.swarm.onAgentGone(({ id, how, label, reset, canResume }) => {
     + ']\x1b[0m\r\n');
 });
 
+// Перезапуск не состоялся: свежая сессия не отметилась и после второй попытки (main.js:
+// restartFailNow). Та же красная отметка, что у упавшего агента, — вкладка не работает, хотя
+// оболочка в ней жива, — и тем же путём снимается: агент снова заработал (см. s.fallen выше).
+// Человеку — уведомление: прораб тут не поможет, на экране чаще всего то, что ждёт человека
+// (вход, лимит, диалог Клода).
+window.swarm.onRestartFailed(({ id, label }) => {
+  const s = sessions.get(String(id));
+  if (!s || !s.term) return;
+  const prev = effectiveStatus(s).status;
+  s.fallen = label || 'не поднялся после перезапуска';
+  s.canResume = false;
+  refreshTabTools(s);
+  s.done = false;
+  applyStatus(s, { notify: false });
+  paintAuto(s);
+  maybeNotify(String(id), prev, 'dead', 'restartFailed');
+  s.term.write('\r\n\x1b[2m[' + s.fallen + '. Посмотри, что на экране, и подними агента сам —'
+    + ' отметка снимется, как только он заработает]\x1b[0m\r\n');
+});
+
 // Вкладка уснула (main закрыл агента за простой, см. sleep.js), просыпается или проснулась.
 window.swarm.onSleep(({ id, sleeping, waking, reset }) => {
   const s = sessions.get(String(id));
@@ -5444,7 +5464,7 @@ const MIN_RUN_MS = 3000; // a "run" shorter than this is a repaint blip, not rea
 const NOTIFY_GRACE_MS = 10000; // stay silent for the first 10s after launch
 const appStartedAt = Date.now(); // for the launch grace above
 
-function maybeNotify(id, prev, next) {
+function maybeNotify(id, prev, next, why) {
   if (!notifyEnabled || prev === next) return;
   // Silent for the first NOTIFY_GRACE_MS after launch: restoring tabs respawns
   // claude in every folder, and those startup status flips aren't worth a ping.
@@ -5461,7 +5481,7 @@ function maybeNotify(id, prev, next) {
   // Исполнитель бригады: его «готов» и вопросы получает прораб, человеку они только шум.
   // Зовём лишь за разрешением — его прораб не раздаёт (спека, «Кто что видит»). Забранный
   // человеком исполнитель (мандат снят) зовёт человека, как любая вкладка.
-  if (s && s.parentId && s.auto && !(next === 'waiting' && s.waitKind === 'permission')) return;
+  if (s && s.parentId && s.auto && why !== 'restartFailed' && !(next === 'waiting' && s.waitKind === 'permission')) return;
 
   let body = null;
   if (next === 'waiting') {
@@ -5470,6 +5490,12 @@ function maybeNotify(id, prev, next) {
     // question so you can often decide without switching tabs. Trimmed to ~140.
     const label = waitLabel(s);
     body = s && s.question ? `${label}: ${s.question}` : label;
+    if (body.length > 140) body = body.slice(0, 139).trimEnd() + '…';
+  } else if (next === 'dead' && why === 'restartFailed') {
+    // Перезапуск не состоялся (onRestartFailed). Зовём и за исполнителя бригады: прораб
+    // узнаёт строкой, но поднять вкладку, стоящую на входе или лимите, может только человек.
+    if (!notifyOnWaiting) return;
+    body = (s && s.fallen) || 'не поднялся после перезапуска';
     if (body.length > 140) body = body.slice(0, 139).trimEnd() + '…';
   } else if (next === 'ready' && prev === 'running') {
     if (!notifyOnReady) return;

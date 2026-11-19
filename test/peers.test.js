@@ -75,8 +75,14 @@ test('пустые поля не роняют визитку — вкладка 
   assert.deepStrictEqual(r, {
     cwd: '', sessionKey: '', claudeSessionId: 'c0ffee',
     project: '', tab: '', auto: false, parentId: null, crew: false,
-    status: '', detail: '', digest: '', sub: '',
+    status: '', detail: '', digest: '', sub: '', actAt: 0, failed: '',
   });
+});
+
+test('когда действовала и не поднялась ли — в визитке: по ним прораб отличает стоящего от работающего', () => {
+  const r = P.rows([['t1', tab({ actAt: 125_000, restartFailed: { reason: 'агент не запустился', at: 1 } })]]).t1;
+  assert.strictEqual(r.actAt, 120_000);      // до минуты — файл не переписывается на каждый инструмент
+  assert.strictEqual(r.failed, 'агент не запустился');
 });
 
 test('подписка вкладки — в визитке: по ней прораб держит правило человека', () => {

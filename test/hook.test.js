@@ -1100,6 +1100,29 @@ test('end to end: прораб получает абсолютный путь з
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('crewStatusNote: «работает» только у того, кто недавно действовал; остальные — стоят N мин', () => {
+  const now = 100 * 60_000;
+  const t = H.crewStatusNote({
+    a: { tab: '#1', status: 'running', actAt: now - 60_000 },
+    b: { tab: '#2', status: 'running', actAt: now - 14 * 60_000 },
+    c: { tab: '#3', status: 'ready', actAt: now - 20 * 60_000, failed: 'агент не запустился' },
+    d: { tab: '#4', status: 'waiting', actAt: now - 3 * 60_000 },
+    e: { tab: '#5', status: 'ready', actAt: now - 2 * 60_000 },
+  }, now);
+  assert.ok(t.includes('«#1» — работает (действовал 1 мин назад)'), t);
+  assert.ok(t.includes('«#2» — стоит 14 мин'), t);
+  assert.ok(t.includes('«#3» — не поднялся после перезапуска: агент не запустился'), t);
+  assert.ok(t.includes('«#4» — ждёт ответа 3 мин'), t);
+  assert.ok(t.includes('«#5» — закончил ход 2 мин назад'), t);
+  assert.strictEqual(H.crewStatusNote({}, now), '');
+});
+
+test('crewStatusNote не попадает в текст старта сессии — минуты там рвали бы кэш', () => {
+  const view = { role: 'prorab', crew: { a: { tab: '#1', status: 'running', actAt: 1 } }, free: 0 };
+  const t = H.crewNote(view, '/x/swarm-tabs.json');
+  assert.ok(!/мин назад|стоит \d/.test(t), t);
+});
+
 test('allSubsNote: расход каждой подписки по её конфигу, без снимка — с пометкой', () => {
   const cards = [
     { name: 'рабочая', home: '/h/work', line: 'claude' },

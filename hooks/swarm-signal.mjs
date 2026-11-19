@@ -498,6 +498,37 @@ const hireFileFor = (sid) => {
   return id ? '.swarm-hire-' + id + '.json' : '';
 };
 
+// Бригада сейчас — прорабу в начало КАЖДОГО хода, а не на старте сессии. На старте (crewNote)
+// только имена: минуты там врали бы уже через ход, а меняющийся байт в тексте старта рвёт кэш
+// всего, что за ним (PLAN-cache-friendly-hook-text.md). Начало хода и так уникально — числа
+// расхода подписок живут там же.
+//
+// «Работает» — только у того, кто недавно ДЕЙСТВОВАЛ: actAt — последний хук вкладки (main.js,
+// с точностью до минуты). Прежде у прораба был один статус, и исполнитель, не поднявшийся после
+// перезапуска, выглядел работающим (жалоба 19.11). Пять минут — с запасом на долгую команду:
+// между началом инструмента и его концом хуков нет.
+const CREW_RECENT_MIN = 5;
+function crewStatusNote(crew, nowMs) {
+  const parts = [];
+  for (const r of Object.values(crew || {})) {
+    if (!r) continue;
+    const name = r.tab || r.project || '?';
+    const m = Number(r.actAt) > 0 ? Math.max(0, Math.floor((nowMs - Number(r.actAt)) / 60000)) : null;
+    const ago = m == null ? '' : m < 1 ? 'только что' : `${m} мин назад`;
+    let what;
+    if (r.failed) what = `не поднялся после перезапуска: ${r.failed}`;
+    else if (r.status === 'sleeping') what = 'спит';
+    else if (r.status === 'waiting') what = `ждёт ответа${m != null && m >= 1 ? ` ${m} мин` : ''}`;
+    else if (m == null) what = r.status === 'running' ? 'работает, признаков жизни ещё не было' : 'без дела';
+    else if (m >= CREW_RECENT_MIN) what = `стоит ${m} мин`;
+    else if (r.status === 'running') what = `работает (действовал ${ago})`;
+    else what = `закончил ход ${ago}`;
+    parts.push(`«${name}» — ${what}`);
+  }
+  if (!parts.length) return '';
+  return `[svarmo] Бригада сейчас: ${parts.join('; ')}.`;
+}
+
 // Потолок бригады по умолчанию — своя копия hire.DEFAULT_MAX (модулей приложения здесь нет),
 // сверяется тестом. Печатается только если main.js не прислал число сам (старая версия).
 const CREW_MAX_DEFAULT = 6;
@@ -1035,15 +1066,22 @@ function outputFor(payload, matcher, tgSessions, presence, extra) {
     && !digestWritten(payload, digestFileFor(sid), fileInfo && fileInfo.digest);
   // Прораб ли это — по реестру, тем же peersViewFor, что и строки на старте. Читаем только в
   // начале хода и только когда есть что сказать (подписок больше одной).
+  // И кто в бригаде жив, а кто стоит (crewStatusNote) — в начале каждого хода прораба.
   let subsForCrew = '';
-  if (showsUsage && !isSubagent(payload) && Array.isArray(ex.subCards) && ex.subCards.length > 1) {
+  let crewNow = '';
+  if (starts && !isSubagent(payload)) {
     const peersAt = fileURLToPath(new URL('./swarm-tabs.json', import.meta.url));
     let rows = null;
-    try { rows = JSON.parse(readFileSync(peersAt, 'utf8')); } catch (_) { rows = null; }
-    if (rows && peersViewFor(rows, sid, process.env.SWARM_TAB_ID).role === 'prorab') subsForCrew = allSubsNote(ex.subCards, ex.snaps, nowSec);
+    try { rows = existsSync(peersAt) ? JSON.parse(readFileSync(peersAt, 'utf8')) : null; } catch (_) { rows = null; }
+    const view = rows ? peersViewFor(rows, sid, process.env.SWARM_TAB_ID) : null;
+    if (view && view.role === 'prorab') {
+      crewNow = crewStatusNote(view.crew, nowSec * 1000);
+      if (showsUsage && Array.isArray(ex.subCards) && ex.subCards.length > 1) subsForCrew = allSubsNote(ex.subCards, ex.snaps, nowSec);
+    }
   }
   const note = [showsUsage ? usageNote(ex.usage, nowSec, subName(ex.subCards, ex.usage && ex.usage.home)) : '',
     subsForCrew,
+    crewNow,
     wantsSummary ? summaryNote() : '',
     needsDigestNudge ? digestMissingNudge(fileInfo && fileInfo.digest) : '',
     (starts && !isSubagent(payload) && tabInfo && tabInfo.blank) ? dossierBlankNudge(tabInfo) : '',
@@ -1375,4 +1413,4 @@ export { tokenFor, markerFor, loadMatcher, callsUser, closingKind, messageText, 
   usageNote, subName, pickUsage, allSubsNote, fmtEta, GATE_FIVE, GATE_SEVEN,
   selfRestartNote, foreignProvider, restartFileFor, dossierNote, dossierBlankNudge, dossierLagNudge, inheritIntro, takeInheritFile, digestNote, digestFileFor, digestMissingNudge, digestWritten,
   DIGEST_DEFAULT_LEN, DIGEST_MIN_LEN, DIGEST_MAX_LEN,
-  peersNote, peersViewFor, crewNote, childNote, hireFileFor, CREW_MAX_DEFAULT };
+  peersNote, peersViewFor, crewNote, crewStatusNote, childNote, hireFileFor, CREW_MAX_DEFAULT };

@@ -879,9 +879,25 @@
     const lim = max || 160;
     const lines = String(screen || '').split(/\r?\n/)
       .map((l) => l.replace(/[│┃║╭╮╰╯─━═┌┐└┘├┤┬┴┼╔╗╚╝▐▛▜▌▝▘█]/g, ' ').replace(/\s+/g, ' ').trim())
-      .filter((l) => l && !/^[>❯$%#]\s*$/.test(l) && /[\p{L}\p{N}]/u.test(l));
+      // Приглашение оболочки («evgeniy@mac fastio % ») — не причина, а её отсутствие.
+      .filter((l) => l && !/(^|\s)[>❯$%#]\s*$/.test(l) && /[\p{L}\p{N}]/u.test(l));
     const tail = lines.slice(-2).join(' · ');
     return tail.length > lim ? tail.slice(0, lim - 1).trimEnd() + '…' : tail;
+  }
+
+  // Экран ПОСЛЕ нашей строки запуска. В оболочке выше видно эхо самой строки, а в ней — промпт
+  // агента: напиши он «упёрся в usage limit», мы бы приняли его слова за ответ Клода и сдались
+  // без второй попытки. Метки — то, что стоит в строке точно (id разговора, хвост промпта);
+  // ищем последний ряд, где есть хоть одна, и берём всё ниже. Не нашли (экран Клода, строка
+  // уехала вверх) — экран целиком.
+  function afterLaunch(screen, marks) {
+    const rows = String(screen || '').split(/\r?\n/);
+    const keys = (Array.isArray(marks) ? marks : []).map((m) => String(m || '').trim()).filter((m) => m.length >= 6);
+    if (!keys.length) return rows.join('\n');
+    for (let i = rows.length - 1; i >= 0; i--) {
+      if (keys.some((k) => rows[i].includes(k))) return rows.slice(i + 1).join('\n');
+    }
+    return rows.join('\n');
   }
 
   function wallOf(screen) {
@@ -963,6 +979,6 @@
     holdText,
     // Подтверждение перезапуска: сделка вместо выстрела.
     CONFIRM_MS, BARE_MS, MAX_ATTEMPTS,
-    confirmStep, screenReason, failText,
+    confirmStep, screenReason, failText, afterLaunch,
   };
 });
