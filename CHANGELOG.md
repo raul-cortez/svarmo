@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.85.0 — 2026-11-19
+
+- feat(restart): confirm a restart by the fresh session's hooks, retry another way, else «не поднялся»
+- feat(restart): a restart is a deal — the pure verdict: confirmed, retry another way, or give up
+- fix(crew): Svarmo's service lines to the foreman wait for the person's draft
+- fix(tabs): a card dropped onto a foreman no longer comes back as an empty black slot
+- feat(crew): a crew member can be taken back; its questions no longer type into the foreman's input
+- fix(restart): the fresh session's prompt is one sentence; steps go to the work file
+
 ## 0.84.1 — 2026-11-13
 
 - feat(panel): questions as two accordion sections; the footer no longer cuts «Файл вопросов»
