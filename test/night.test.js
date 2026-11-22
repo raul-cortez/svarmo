@@ -509,6 +509,17 @@ test('отсчёт до сброса в хуке и в строке статус
   }
 });
 
+test('исполнитель: «спроси прораба» — один раз на вопрос и не чаще раза в 15 минут', () => {
+  const d = (o) => night.crewAskDecision(Object.assign({ key: 'q1', lastKey: '', lastAt: 0, box: false, now: NOW }, o));
+  assert.strictEqual(d({}).act, 'tell');
+  assert.strictEqual(d({ lastKey: 'q1', lastAt: NOW - 60 * 60_000 }).act, 'skip', 'тот же вопрос — не повторяем никогда');
+  // Петля 22.11: агент ответил «отправил, жду» — новый отпечаток через секунды.
+  assert.strictEqual(d({ key: 'q2', lastKey: 'q1', lastAt: NOW - 5000 }).act, 'skip');
+  assert.strictEqual(d({ key: 'q2', lastKey: 'q1', lastAt: NOW - night.CREW_ASK_GAP_MS - 1 }).act, 'tell');
+  assert.strictEqual(d({ box: true }).act, 'skip', 'рамку не трогаем');
+  assert.strictEqual(d({ key: '' }).act, 'skip');
+});
+
 (async () => {
   for (const [name, fn] of tests) {
     try { await fn(); passed++; console.log('  ok  ' + name); }

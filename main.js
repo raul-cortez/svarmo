@@ -5352,7 +5352,6 @@ function nightOnWaiting(id, d) {
 }
 
 function nightCancelWaiting(d) {
-  if (d) d.crewAskKey = '';       // ушла из «ждёт» — следующий вопрос снова достоин строки прорабу
   const st = d && d.ni;
   if (!st) return;
   if (st.nudgeTimer) { clearTimeout(st.nudgeTimer); st.nudgeTimer = null; }
@@ -5374,11 +5373,14 @@ function nightCancelWaiting(d) {
 // тогда стоит с вопросом, как ночью стоит одиночка с рамкой; точка на пилюле это показывает.
 function crewAskProrab(id, d) {
   const key = nightKey(d);
-  if (d.crewAskKey === key) return;      // про этот же вопрос уже сказали
-  if (d.waitingBox) return;
+  // Отпечаток НЕ сбрасываем на уходе из «ждёт»: уходит вкладка и от нашей же строки, и так
+  // выходила петля — 13 строк за минуту (22.11). Решение и его причины — night.crewAskDecision.
+  const dec = night.crewAskDecision({ key, lastKey: d.crewAskKey, lastAt: d.crewAskAt, box: d.waitingBox, now: Date.now() });
+  if (dec.act !== 'tell') return;
   const parent = det.get(d.parentId);
   if (!parent || parent.dead) return;    // прораб мёртв — писать некому; строка на старте сессии про это скажет
   d.crewAskKey = key;
+  d.crewAskAt = Date.now();
   const boss = tgTabName(d.parentId);
   const registry = path.join(app.getPath('userData'), 'swarm-tabs.json');
   const to = parent.sessionKey
