@@ -467,6 +467,7 @@ const COMMANDS = [
   { command: 'usage', description: 'расход: контекст вкладки, 5 часов, неделя' },
   { command: 'mode', description: 'режим вкладки: auto, edits, plan, manual' },
   { command: 'new', description: 'ещё один агент в папке этой темы' },
+  { command: 'sub', description: 'перевести вкладку на другую подписку, разговор тот же' },
   { command: 'sync', description: 'привести темы в соответствие с вкладками' },
   { command: 'help', description: 'что я умею' },
 ];
@@ -605,25 +606,30 @@ function subTag(line) {
   return h.toString(36);
 }
 
-function subPickData(tab, idx, line) {
-  const data = [NS_PREFIX, tab, idx, subTag(line)].join('|');
+// Те же кнопки подписок служат двум вопросам: «на какой открыть нового агента» (/new) и «на
+// какую перевезти эту вкладку» (/sub). Различает их префикс, и путать нельзя: тап по
+// «переехать» не должен открывать второго агента, и наоборот.
+const MOVE_PREFIX = 'm';
+
+function subPickData(tab, idx, line, prefix) {
+  const data = [prefix || NS_PREFIX, tab, idx, subTag(line)].join('|');
   return data.length <= CB_MAX ? data : null;
 }
 
 function parseSubPick(raw) {
   const parts = String(raw == null ? '' : raw).split('|');
-  if (parts.length !== 4 || parts[0] !== NS_PREFIX) return null;
+  if (parts.length !== 4 || (parts[0] !== NS_PREFIX && parts[0] !== MOVE_PREFIX)) return null;
   const idx = Number(parts[2]);
   if (!parts[1] || !parts[3] || !Number.isInteger(idx) || idx < 0) return null;
-  return { tab: parts[1], idx, tag: parts[3] };
+  return { tab: parts[1], idx, tag: parts[3], move: parts[0] === MOVE_PREFIX };
 }
 
 // По кнопке на подписку, одна в ряд: подпись — имя карточки (или её строка запуска, если имени
 // нет). Подписку этой вкладки помечаем: это и есть «как раньше», один тап без раздумий.
-function subKeyboard(tab, cards, current) {
+function subKeyboard(tab, cards, current, move) {
   const rows = [];
   (Array.isArray(cards) ? cards : []).forEach((c, i) => {
-    const data = subPickData(tab, i, c && c.line);
+    const data = subPickData(tab, i, c && c.line, move ? MOVE_PREFIX : NS_PREFIX);
     if (!data) return;
     const name = String((c && c.name) || '').trim() || String((c && c.line) || '').trim();
     const mark = current && name === current ? ' ✓' : '';

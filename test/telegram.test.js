@@ -445,7 +445,7 @@ test('выбор подписки: кнопка на карточку, метк�
   const kb = T.subKeyboard('7', cards, 'Рабочая').inline_keyboard.flat();
   assert.deepStrictEqual(kb.map((b) => b.text), ['Рабочая ✓', 'claude-my --model sonnet']);
   const pick = T.parseSubPick(kb[1].callback_data);
-  assert.deepStrictEqual(pick, { tab: '7', idx: 1, tag: T.subTag('claude-my --model sonnet') });
+  assert.deepStrictEqual(pick, { tab: '7', idx: 1, tag: T.subTag('claude-my --model sonnet'), move: false });
   assert.notStrictEqual(pick.tag, T.subTag('claude'), 'другая строка — другая метка');
   assert.ok(Buffer.byteLength(kb[1].callback_data) <= T.CB_MAX);
   assert.strictEqual(T.parseAction(kb[0].callback_data), null, 'не сойдёт за быструю кнопку');
@@ -528,6 +528,16 @@ test('кнопка auto не обещает тишины, которой не б
 test('в меню бота есть «где я» и «последний ответ»', () => {
   const names = T.COMMANDS.map((c) => c.command);
   for (const c of ['phone', 'comp', 'last']) assert.ok(names.includes(c), 'нет /' + c);
+});
+
+test('кнопки переезда и кнопки нового агента не путаются', () => {
+  const cards = [{ line: 'claude', name: 'рабочая' }, { line: 'claude-my', name: 'личная' }];
+  const move = T.subKeyboard('7', cards, 'личная', true).inline_keyboard;
+  const open = T.subKeyboard('7', cards, 'личная').inline_keyboard;
+  assert.strictEqual(T.parseSubPick(move[0][0].callback_data).move, true);
+  assert.strictEqual(T.parseSubPick(open[0][0].callback_data).move, false);
+  assert.strictEqual(move[1][0].text, 'личная ✓');
+  assert.ok(T.COMMANDS.some((c) => c.command === 'sub'));
 });
 
 test('список команд для меню бота непустой и с описаниями', () => {

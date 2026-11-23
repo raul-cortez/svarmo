@@ -787,6 +787,14 @@ const API_ERROR_RE = /\bAPI Error:.*\bmid-response\b/i;
 
 function apiErrorHit(snapshot) { return hits(snapshot, API_ERROR_RE); }
 
+// Подписка не работает совсем — не лимит, который сбросится сам, а оплата или вход. Живой текст
+// 22.11: «Claude Code can't use your Claude subscription, usually because a payment is past due
+// · Pay or renew at …». Вкладка при этом жива и на каждый ход отвечает одной этой строкой —
+// работать её может заставить только другая подписка (см. submove.js).
+const SUB_DEAD_RE = /can.t use your Claude subscription|payment is past due|Please run \/login|OAuth token (?:has )?(?:expired|been revoked)/i;
+
+function subDeadHit(snapshot) { return hits(snapshot, SUB_DEAD_RE); }
+
 // --- строка ввода: осталось ли в ней то, что мы напечатали -------------------------------
 // Svarmo печатает во вкладку сам (ответ из телеги, ночной толчок, строка прорабу) и отдельно
 // жмёт Enter. Иногда Enter не срабатывает — Клод ещё разбирал длинную вставку и принял его
@@ -836,7 +844,7 @@ module.exports = {
   inputDraft, draftIsOurs, submitState,
   extractQuestion, lastAgentLine, lastAgentBlock, readMode, modeTitle, modeFlag, MODE_TITLES, MODE_FLAGS,
   inferWaitingKind, asksForInput, waitsForWork, askFingerprint, setAskPhrases, countSubagents,
-  parsePrompt, fingerprintOf, scrolledBack, limitHit, limitReset, apiErrorHit,
+  parsePrompt, fingerprintOf, scrolledBack, limitHit, limitReset, apiErrorHit, subDeadHit,
   contentEnd, snapshotRows, snapshotWrapped, statuslineOf, ctxFromLine, ctxPick,
   PICK_ROW_SRC,
 };

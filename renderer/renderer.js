@@ -7893,6 +7893,26 @@ window.swarm.onRestarted(({ id, n, sessionKey }) => {
   persistTabs();
 });
 
+// Вкладка переехала на другую подписку (main: subMoveFire). Запоминаем её новую строку: после
+// релонча Svarmo вкладка должна подняться там, куда переехала, а не на прежней подписке, у
+// которой её разговора уже нет.
+window.swarm.onSubMoved(({ id, line, claudeSessionId }) => {
+  const s = sessions.get(String(id));
+  if (!s) return;
+  const text = String(line || '').trim();
+  const word = launchWordFrom(text);
+  if (word) {
+    s.cmd = word;
+    const at = text.indexOf(word);
+    s.flags = at === -1 ? '' : text.slice(at + word.length).trim();
+  } else if (text) {
+    s.cmd = text;
+    s.flags = '';
+  }
+  if (claudeSessionId) s.claudeSessionId = claudeSessionId;
+  persistTabs();
+});
+
 // Всё, что случилось по дороге и НЕ кончилось перезапуском: «не сейчас», нет ответа, отмена.
 // Без этого функция молчала бы ровно в тех случаях, когда человек и хочет знать, чем она занята.
 window.swarm.onRestartNote(({ id, text }) => restartJournal(id, text));

@@ -172,6 +172,11 @@ contextBridge.exposeInMainWorld('swarm', {
   // нового разговора — его вкладке и хранить.
   relaunchSession: (opts) => ipcRenderer.invoke('session:relaunch', opts),
   // Перезапуск случился — строка в журнал вкладки.
+  onSubMoved: (cb) => {
+    const handler = (_e, payload) => cb(payload);
+    ipcRenderer.on('session:subMoved', handler);
+    return () => ipcRenderer.removeListener('session:subMoved', handler);
+  },
   onRestarted: (cb) => {
     const handler = (_e, payload) => cb(payload);
     ipcRenderer.on('session:restarted', handler);

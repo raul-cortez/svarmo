@@ -212,6 +212,7 @@ const questions = require('./questions');            // вопросы чело�
 const dossier = require('./dossier');                // досье вкладки: шаблоны, очередь из лога, наследство
 const hire = require('./hire');                      // найм по просьбе прораба: имя файла, разбор заявки, потолок
 const deadtab = require('./deadtab');                // упавший агент в живой оболочке: разбор и гашение мыши
+const submove = require('./submove');                // переезд вкладки на другую подписку
 const sleep = require('./sleep');                    // сон простаивающей вкладки: когда можно и жив ли сабагент
 const night = require('./night');                   // работа без человека: правило агенту, толчки, отчёт
 const geo = require('./geo');                       // регион: из-под российского адреса Svarmo не работает
@@ -703,7 +704,7 @@ process.on('unhandledRejection', (reason) => reportMainError(reason));
 // tell "waiting for a prompt" apart from "idle/done". We deliberately do NOT
 // surface Claude's token counter or activity words — just the four states.
 const { Terminal: HeadlessTerminal } = require('@xterm/headless');
-const { extractQuestion, lastAgentBlock, readMode, modeTitle, modeFlag, countSubagents, contentEnd, snapshotRows, snapshotWrapped, statuslineOf, ctxFromLine, ctxPick, setAskPhrases, askFingerprint, parsePrompt, scrolledBack, limitHit, limitReset, apiErrorHit, asksForInput, waitsForWork, inputDraft, submitState } = require('./screen');
+const { extractQuestion, lastAgentBlock, readMode, modeTitle, modeFlag, countSubagents, contentEnd, snapshotRows, snapshotWrapped, statuslineOf, ctxFromLine, ctxPick, setAskPhrases, askFingerprint, parsePrompt, scrolledBack, limitHit, limitReset, apiErrorHit, subDeadHit, asksForInput, waitsForWork, inputDraft, submitState } = require('./screen');
 // The status state machine + «ждёт» latch + hook arbitration live in a pure,
 // unit-tested module; osc.js sniffs hook markers out of the raw pty stream.
 const { tickStatus, applyHook, applyTranscript, keyboardEvent, hasPromptBox, trRunStale, RE_RUNNING } = require('./detector');
@@ -1107,6 +1108,11 @@ setInterval(() => {
         // Рамку, закрывшуюся сама по себе — без единой другой перемены, — сюда не приносит ничто:
         // ветка живёт на смене статуса. Такое ожидание доедет общим тактом, за полминуты.
         else if (isOver && ((sub === 0 && wasSub > 0) || (wasBox && !d.waitingBox))) restartKick(id, d, 'clear');
+        // Ход кончился — не ответил ли Клод «подписка не работает» (оплата, вход). Тогда вкладку
+        // переводим на другую подписку сами (subDeadCheck, submove.js).
+        if (prev === 'running' && next.status !== 'running') {
+          try { subDeadCheck(id, d); } catch (e) { reportMainError(e); }
+        }
         // Telegram: an agent starting to wait is the whole point of the bridge. Sent on
         // a delay (see tgOnWaiting) and cancelled if you answer at the keyboard first.
         if (next.status === 'waiting') {
@@ -1631,12 +1637,14 @@ function agentGone(id, d, wasBusy) {
     // Пока крутится круг самоперезапуска, `/exit` печатаем МЫ САМИ. Называть это падением
     // значило бы показывать «агент упал» на каждом ночном перезапуске — то есть обесценить
     // сообщение ровно до того, как оно понадобится по-настоящему.
-    expected: !!(d.rsPendingLine || (d.rs && d.rs.phase === 'exiting') || d.sleepExiting),
+    expected: !!(d.rsPendingLine || (d.rs && d.rs.phase === 'exiting') || d.sleepExiting || d.subMove),
   });
   if (!v.gone) return;
   // Агента закрыли МЫ, чтобы вкладка уснула (см. sleepNow). Это не падение и не выход: вкладка
   // жива, разговор цел, и поднимется она сама, как только понадобится.
   if (d.sleepExiting) { sleepSettled(id, d); return; }
+  // Агента закрыли мы — вкладка переезжает на другую подписку (subMoveStart).
+  if (d.subMove) { subMoveFire(id, d); return; }
   // Гасим наследство агента в эмуляторе ВСЕГДА, не только на падении: после честного `/exit`
   // Клод убирает за собой сам, и лишний сброс ничего не стоит (в строке одни выключения), а
   // после падения убрать некому — и каждое движение мыши сыплет `35;57;4M` в приглашение.
@@ -4310,6 +4318,7 @@ function tgOnUpdate(u) {
   if (u.command === 'usage') { tgUsage(u).catch(reportMainError); return; }
   if (u.command === 'sync') { tgSync(u.threadId).catch(reportMainError); return; }
   if (u.command === 'new') { tgNewTab(u).catch(reportMainError); return; }
+  if (u.command === 'sub') { tgSubMenu(u).catch(reportMainError); return; }
   if (u.command === 'mode') { tgMode(u).catch(reportMainError); return; }
   if (u.command === 'phone') { tgWhereAmI(u, 'phone').catch(reportMainError); return; }
   if (u.command === 'comp') { tgWhereAmI(u, 'desk').catch(reportMainError); return; }
@@ -4717,8 +4726,45 @@ async function tgOfferNewTab(u, id, d) {
 // Нажали подписку под «На какой подписке открыть агента». Папку даёт вкладка этой темы, как и
 // у быстрых кнопок; карточку — номер с кнопки, но только если метка строки запуска совпала:
 // иначе список подписок успели поменять, и номер указал бы на чужую.
+// /sub в теме вкладки — перевести её на другую подписку, разговор тот же (submove.js).
+async function tgSubMenu(u) {
+  const id = tgRoute(u);
+  const d = id == null ? null : det.get(id);
+  if (!d) {
+    await tgSend({ threadId: u.threadId, text: '/sub работает в теме вкладки — так я знаю, какую переводить.' });
+    return;
+  }
+  if (subsCardsNow.length < 2) {
+    await tgSend({ threadId: u.threadId, text: 'Подписка в Svarmo одна — переводить некуда.' });
+    return;
+  }
+  const cur = subsCardsNow[tabCardIndex(d)];
+  const curName = cur ? (cur.name || cur.line) : '';
+  await tgSend({
+    threadId: u.threadId,
+    text: `${tgTabName(id)} сейчас на ${curName ? `«${curName}»` : 'неизвестной подписке'}. На какую перевести?`
+      + ' Разговор продолжится тот же.',
+    replyMarkup: telegram.subKeyboard(String(id), subsCardsNow, curName, true),
+  });
+}
+
 async function tgOnSubPick(pick, u, ack, routed) {
   const at = telegram.callbackTab({ threadId: u.threadId, routed, payloadTab: pick.tab, sameCrew: tgSameCrew });
+  if (pick.move) {
+    const card = subsCardsNow[pick.idx];
+    if (!card || telegram.subTag(card.line) !== pick.tag) { await ack('Список подписок поменялся — скажи /sub ещё раз.'); return; }
+    if (at.tab == null || !det.get(at.tab)) { await ack('Эта вкладка уже закрыта.'); return; }
+    const name = card.name || card.line;
+    const r = subMoveStart(String(at.tab), pick.idx, 'телега', false);
+    await ack(r.ok ? `Перевожу на «${name}».` : `Не вышло: ${r.why}.`);
+    // Кнопки убираем: второй тап начал бы второй переезд.
+    await tgFetchJson(telegram.apiUrl(TG.token, 'editMessageText'), {
+      chat_id: u.chatId,
+      message_id: u.messageId,
+      text: r.ok ? `Перевожу ${tgTabName(at.tab)} на «${name}», разговор тот же.` : `На «${name}» не перевёл: ${r.why}.`,
+    }).catch(reportMainError);
+    return;
+  }
   const d = at.tab == null ? null : det.get(at.tab);
   if (!d || d.dead || !d.cwd) { await ack('Эта вкладка уже закрыта — папку взять неоткуда.'); return; }
   const card = subsCardsNow[pick.idx];
@@ -5921,6 +5967,33 @@ ipcMain.handle('tab:menu', (_e, { id, color } = {}) => {
         shell.openPath(p[which]).then((err) => { if (err) restartLog(`вкладка ${key}: не открылся ${p[which]}: ${err}`); })
           .catch(reportMainError);
       },
+    });
+  }
+  // Перенести на другую подписку: тот же разговор, другой аккаунт (submove.js). Пункт стоит
+  // всегда, по правилу меню выше: при одной подписке или не-Клоде он серый и говорит почему.
+  const moveBusy = subMoveBusyWith(d);
+  const moveClaude = !!(d.launchCmd && resume.supports(launcherOf(d.launchCmd)));
+  if (subsCardsNow.length < 2 || !moveClaude || moveBusy) {
+    items.push({ type: 'separator' });
+    items.push({
+      label: subsCardsNow.length < 2 ? 'Перенести на подписку (подписка одна)'
+        : !moveClaude ? 'Перенести на подписку (вкладка запущена не Клодом)'
+          : `Перенести на подписку (${moveBusy})`,
+      enabled: false,
+    });
+  } else {
+    const curIdx = tabCardIndex(d);
+    items.push({ type: 'separator' });
+    items.push({
+      label: 'Перенести на подписку',
+      submenu: subsCardsNow.map((c, i) => ({
+        label: `${c.name || c.line}${i === curIdx ? ' — сейчас' : ''}`,
+        enabled: i !== curIdx,
+        click: () => {
+          const r = subMoveStart(key, i, 'меню карточки', false);
+          if (!r.ok) restartNote(key, `не переехала на «${c.name || c.line}»: ${r.why}`);
+        },
+      })),
     });
   }
   const canResume = canResumeTab(d);
@@ -8376,6 +8449,7 @@ function sleepBusyWith(d) {
   if (d.tgAck || d.tgPending || tgHeldFresh(d, Date.now())) return 'ждёт мост телеги';
   if (d.sleepQueue && d.sleepQueue.length) return 'есть отложенные сообщения';
   if (d.sleeping || d.sleepExiting || d.waking) return 'уже спит';
+  if (d.subMove) return 'переезжает на другую подписку';
   return '';
 }
 
@@ -8552,6 +8626,198 @@ function wakeWatch(id, d) {
     if (queue.length) sleepLog(`вкладка ${id}: отдал отложенных сообщений: ${queue.length}`);
   };
   setTimeout(step, 500);
+}
+
+// --- переезд вкладки на другую подписку (submove.js) ------------------------------------
+// Тот же разговор, другой аккаунт: закрыть агента, перенести стенограмму в папку конфига новой
+// подписки, переставить прокси в оболочке и поднять разговор её строкой с `--resume`. Зачем и
+// почему именно так — в шапке submove.js. Похоже на сон вкладки (закрыть и поднять тем же
+// разговором), только поднимается она другой строкой и сразу.
+//
+// Подписки, на которых видели «can't use your Claude subscription», — home → когда. На них сами
+// не едем час (submove.DEAD_FOR_MS); руками — пожалуйста, человек мог как раз оплатить.
+const subDeadHomes = {};
+const SUBMOVE_STOP_MS = 60_000;
+const SUBMOVE_CHECK_MS = 30_000;
+
+// Карточка подписки, на которой вкладка сейчас: по папке конфига её разговора, иначе по строке.
+function tabCardIndex(d) {
+  const home = (d.claudeSessionId && sessionHomes().get(String(d.claudeSessionId))) || '';
+  return subs.matchIndex(subsCardsNow, { home, lines: [String(d.launchCmd || '')] });
+}
+
+function subMoveBusyWith(d) {
+  if (d.dead) return 'вкладка закрывается';
+  if (d.subMove) return 'уже переезжает';
+  if ((d.rs && d.rs.phase && d.rs.phase !== 'idle') || d.rsPendingLine || d.rsConfirm) return 'идёт перезапуск';
+  if (d.sleepExiting || d.waking) return 'засыпает или просыпается';
+  if (geoTabBlocked(d)) return 'заморожена по региону';
+  return '';
+}
+
+function moveFs(a, b) {
+  try { fs.renameSync(a, b); } catch (e) {
+    if (e.code !== 'EXDEV') throw e;
+    fs.cpSync(a, b, { recursive: true });
+    fs.rmSync(a, { recursive: true, force: true });
+  }
+}
+
+// Перенести стенограмму (и папку её сабагентов) в конфиг новой подписки.
+function subMoveTranscript(d, sessionId, toHome) {
+  const file = sessionId + '.jsonl';
+  let src = d.trFile && path.basename(d.trFile) === file && fs.existsSync(d.trFile) ? d.trFile : '';
+  if (!src) {
+    for (const dir of projectDirs(d.cwd)) {
+      const f = path.join(dir, file);
+      if (fs.existsSync(f)) { src = f; break; }
+    }
+  }
+  if (!src) return { ok: false, why: 'файла разговора не нашёл' };
+  const dstDir = projectDir(d.cwd, toHome);
+  const dst = path.join(dstDir, file);
+  if (path.resolve(src) === path.resolve(dst)) return { ok: true, src, dst };
+  fs.mkdirSync(dstDir, { recursive: true });
+  moveFs(src, dst);
+  const side = src.replace(/\.jsonl$/, '');
+  const sideDst = dst.replace(/\.jsonl$/, '');
+  if (fs.existsSync(side) && !fs.existsSync(sideDst)) {
+    try { moveFs(side, sideDst); } catch (e) { reportMainError(e); }
+  }
+  return { ok: true, src, dst };
+}
+
+// Начать переезд. Возвращает { ok, why } — why человеку, когда не поехали.
+function subMoveStart(id, idx, why, auto) {
+  const d = det.get(id);
+  if (!d || !sessions.has(id)) return { ok: false, why: 'вкладки уже нет' };
+  const to = subsCardsNow[idx];
+  if (!to) return { ok: false, why: 'такой подписки нет' };
+  const busy = subMoveBusyWith(d);
+  if (busy) return { ok: false, why: busy };
+  if (!d.launchCmd || !resume.supports(launcherOf(d.launchCmd)) || !resume.supports(launcherOf(to.line))) {
+    return { ok: false, why: 'вкладку запускали не Клодом — переносить нечего' };
+  }
+  const curIdx = tabCardIndex(d);
+  const from = subsCardsNow[curIdx] || null;
+  if (curIdx === idx || (from && from.home && from.home === to.home)) return { ok: false, why: 'вкладка уже на этой подписке' };
+  const started = Date.now();
+  d.subMove = {
+    idx, line: to.line, why, auto: !!auto, at: started, fired: false,
+    fromLine: from ? from.line : '', fromName: from ? (from.name || from.line) : '',
+  };
+  restartLog(`вкладка ${id}: переезд на «${to.name || to.line}» (${why})`);
+  tgOnRestartExit(id, d);
+  if (d.shellBusy === false) { subMoveFire(id, d); return { ok: true }; }
+  const pid = d.agentPid;
+  if (!pid) { d.subMove = null; return { ok: false, why: 'не вижу процесса агента — попробуй через пару секунд' }; }
+  killAgent(pid, (e) => { if (e && pidAlive(pid)) subMoveAbort(id, d, `закрыть агента не вышло (${e.code || 'ошибка'})`); });
+  setTimeout(() => {
+    if (d.subMove && d.subMove.at === started && !d.subMove.fired) subMoveAbort(id, d, 'агент не закрылся за минуту');
+  }, SUBMOVE_STOP_MS);
+  return { ok: true };
+}
+
+function subMoveAbort(id, d, why) {
+  if (!d.subMove) return;
+  d.subMove = null;
+  restartNote(id, `не переехала на другую подписку: ${why}`);
+}
+
+// Агент ушёл (agentGone) или его и не было — печатаем запуск на новой подписке.
+function subMoveFire(id, d) {
+  const m = d.subMove;
+  if (!m || m.fired) return;
+  m.fired = true;
+  const to = subsCardsNow[m.idx];
+  if (!to || to.line !== m.line) { subMoveAbort(id, d, 'список подписок поменялся'); return; }
+  const name = to.name || to.line;
+  const base = submove.baseLine(stripConversationFlags(String(d.launchCmd || '')), m.fromLine, to.line);
+  if (!base) { subMoveAbort(id, d, 'не понял строку запуска вкладки'); return; }
+  const shellPath = pickShell();
+  const family = shellFamily(shellPath);
+  const pc = subs.proxyCardFor(NETWORK_PROXIES, to.line);
+  const real = pc ? normalizeProxy(pc.proxy) : '';
+  const url = real ? relayUrl(real) : '';
+  const all = !!(pc && pc.proxyAll);
+  const prefix = submove.envPrefix(family, url, all, url ? proxyEnv(tabEnv(process.env), url, all).NO_PROXY : '');
+  const sid = d.claudeSessionId;
+  let line = '';
+  let failWhy = '';
+  if (!sid) failWhy = 'не знаю id разговора';
+  else if (!to.home) failWhy = `на «${name}» ещё не было ни одного хода — не знаю её папки`;
+  else {
+    try {
+      const r = subMoveTranscript(d, sid, to.home);
+      if (r.ok) {
+        line = resumeLaunchLine(base, sid, d.mode);
+        restartLog(`вкладка ${id}: разговор перенесён ${r.src} → ${r.dst}`);
+      } else failWhy = r.why;
+    } catch (e) { failWhy = `перенос не удался (${e.code || e.message})`; }
+  }
+  let fresh = false;
+  if (!line) {
+    // Разговор не перенести — поднимаем свежую сессию, и задачу ей отдаёт досье, как при
+    // перезапуске по контексту. Хуже, чем тот же разговор, но лучше мёртвой вкладки.
+    fresh = true;
+    try { dossierInherit(id, d, 'restart', false); } catch (e) { reportMainError(e); }
+    const built = restartLaunchLine(base, d.sessionKey || '', d.mode, '');
+    line = restart.launchLine(built.cmd, restart.PROMPT_CARRIED, family);
+    if (built.sessionId) d.claudeSessionId = built.sessionId;
+  }
+  if (!line) { subMoveAbort(id, d, 'не из чего собрать строку запуска'); return; }
+  ptyType(id, clearPrefix(shellPath) + prefix + line + '\r');
+  d.launchCmd = base;
+  d.proxy = real;
+  d.launchAt = Date.now();
+  d.launchPid = null;
+  trForget(d);
+  d.subMove = null;
+  d.subMovedAt = Date.now();
+  sessionHomesCache.at = 0;
+  tgWriteModes();
+  writeTabsMap();
+  safeSend('session:subMoved', { id, line: to.line, claudeSessionId: d.claudeSessionId || null });
+  if (fresh) safeSend('session:claude', { id, claudeSessionId: d.claudeSessionId });
+  const text = submove.noteText({ from: m.fromName, to: name, auto: m.auto, fresh, why: failWhy });
+  restartNote(id, text);
+  if (TG.chatId != null && TG.token) {
+    tgSend({ threadId: tgTopicOf(d), text: `🔁 ${tgTabName(id)}: ${text}.`, silent: !m.auto }).catch(reportMainError);
+  }
+  const firedAt = d.subMovedAt;
+  setTimeout(() => {
+    if (!sessions.has(id) || d.subMovedAt !== firedAt || d.shellBusy === true) return;
+    restartNote(id, `на «${name}» агент не поднялся — посмотри вкладку`);
+  }, SUBMOVE_CHECK_MS);
+}
+
+// Ход кончился — не сказал ли Клод, что подписка не работает. Едем сами (решение — в
+// submove.autoDecision); ехать некуда — говорим человеку один раз.
+function subDeadCheck(id, d) {
+  if (!subsCardsNow.length) return;
+  let dead = false;
+  try { dead = subDeadHit(snapshot(d)); } catch (_) { dead = false; }
+  if (!dead) return;
+  const now = Date.now();
+  const curIdx = tabCardIndex(d);
+  const cur = subsCardsNow[curIdx] || null;
+  const target = submove.pickTarget(subsCardsNow, curIdx, subDeadHomes, now);
+  const dec = submove.autoDecision({
+    dead, moving: !!d.subMove, busyWith: subMoveBusyWith(d), movedAt: d.subMovedAt || 0,
+    turnAt: d.turnStartedAt || 0, now, target,
+  });
+  if (dec.mark && cur && cur.home) subDeadHomes[cur.home] = now;
+  if (dec.act === 'move') {
+    const r = subMoveStart(id, target, 'подписка не работает', true);
+    if (!r.ok) restartLog(`вкладка ${id}: подписка не работает, но переехать не вышло — ${r.why}`);
+    return;
+  }
+  if (dec.act !== 'stand' || d.subDeadSaid === dec.why) return;
+  d.subDeadSaid = dec.why;
+  const text = `подписка${cur ? ` «${cur.name || cur.line}»` : ''} не работает (оплата или вход),`
+    + (dec.why === 'ехать некуда' ? ' а перевести вкладку некуда' : ' а вкладка только что переезжала — сама больше не еду');
+  restartNote(id, text);
+  if (TG.chatId != null && TG.token) tgSend({ threadId: tgTopicOf(d), text: `⚠️ ${tgTabName(id)}: ${text}.` }).catch(reportMainError);
 }
 
 ipcMain.on('settings:sleep', (_e, opts = {}) => {

@@ -989,6 +989,18 @@ test('баннер временного сбоя API узнаётся в раз�
   assert.strictEqual(S.apiErrorHit('⏺ API Error: Server error mid-response'), true);
 });
 
+// --- подписка не работает совсем ------------------------------------------------
+// Живой текст 22.11 — «личная» с просроченной оплатой отвечала им на каждый ход.
+test('мёртвая подписка узнаётся, лимит и разговор о ней — нет', () => {
+  assert.strictEqual(S.subDeadHit("  ⎿  Claude Code can't use your Claude subscription, usually because a payment is past due · Pay or renew at"), true);
+  assert.strictEqual(S.subDeadHit('⏺ Claude Code can’t use your Claude subscription'), true);
+  assert.strictEqual(S.subDeadHit('  ⎿  API Error: 401 · Please run /login'), true);
+  assert.strictEqual(S.subDeadHit('OAuth token has expired'), true);
+  assert.strictEqual(S.subDeadHit("You've hit your limit · resets 5pm"), false);
+  assert.strictEqual(S.subDeadHit('Подписка: "payment is past due" — это про оплату'), false);
+  assert.strictEqual(S.subDeadHit(''), false);
+});
+
 // Обычная ошибка API (не оборвавшая ход, а севшая диалогом с кнопками, или случившаяся ДО
 // первого байта ответа) под этот признак не подходит нарочно — только суффикс «mid-response»
 // значит «ход брошен на полуслове, и спросить агенту нечего».
