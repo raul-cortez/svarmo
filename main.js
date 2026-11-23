@@ -3424,7 +3424,7 @@ async function tgFlushHeld() {
     const u = { threadId: held.threadId, messageId: held.messageId };
     await tgAckSend(id, d, u);
     if (!tgAnswer(id, held.text)) continue;
-    d.tgPrimed = true;
+    if (!telegram.isShellLine(held.text)) d.tgPrimed = true;
     tgLog(`  задержанный текст ушёл в вкладку ${id}`);
   }
 }
@@ -4433,7 +4433,8 @@ async function tgDeliver(id, d, u, tagged) {
     await tgSend({ threadId: u.threadId, replyTo: u.messageId, text: 'Эта вкладка уже закрыта.' });
     return;
   }
-  if (d) d.tgPrimed = true;
+  // «!команда» ушла без метки (telegram.isShellLine) — соглашение агент ещё не слышал.
+  if (d && !telegram.isShellLine(tagged)) d.tgPrimed = true;
   await tgAckSend(id, d, u);
 }
 

@@ -641,6 +641,15 @@ test('tagInput: the tag stays on ONE line — a newline would submit early', () 
   assert.strictEqual(out, '[тлг: коротко, без кода] x');
 });
 
+test('tagInput: «!команда» уходит без метки — иначе Claude Code не включит режим оболочки', () => {
+  assert.strictEqual(T.tagInput({ text: '  !git status', instruction: 'коротко', primed: false }), '!git status');
+  assert.strictEqual(T.tagInput({ text: '!ls', primed: true }), '!ls');
+  // Многострочное едет вставкой, а во вставке «!» режима не включает: это реплика, метка нужна.
+  assert.strictEqual(T.tagInput({ text: '!a\nb', primed: true }), '[тлг] !a\nb');
+  assert.strictEqual(T.tagInput({ text: '!', primed: true }), '[тлг] !');
+  assert.strictEqual(T.tagInput({ text: 'смотри !важно', primed: true }), '[тлг] смотри !важно');
+});
+
 test('tagInput: no instruction, or no text, still yields something sane', () => {
   assert.strictEqual(T.tagInput({ text: 'привет' }), '[тлг] привет');
   assert.strictEqual(T.tagInput({ text: '', instruction: 'коротко' }), '[тлг: коротко]');

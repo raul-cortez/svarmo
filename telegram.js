@@ -380,9 +380,20 @@ function thinkingLine(info) {
   return parts.join(' · ');
 }
 
+// «!команда» с телефона — команда оболочки, а не реплика агенту. Claude Code включает режим
+// оболочки, только если «!» — ПЕРВЫЙ символ в поле ввода, а метка «[тлг] » перед ним делала из
+// команды обычное сообщение в чат (22.11). Такую строку печатаем как есть, без метки: соглашение
+// «отвечай коротко» команде не нужно — её вывод агент и так увидит. Только одной строкой:
+// многострочный текст едет вставкой, а во вставке «!» режима не включает.
+function isShellLine(text) {
+  const t = String(text == null ? '' : text).trim();
+  return t.length > 1 && t[0] === '!' && !t.includes('\n');
+}
+
 function tagInput(opts) {
   const o = opts || {};
   const text = String(o.text == null ? '' : o.text).trim();
+  if (isShellLine(text)) return text;
   const instruction = String(o.instruction || '').replace(/\s+/g, ' ').trim();
   const head = !o.primed && instruction ? `[${TG_TAG}: ${instruction}]` : `[${TG_TAG}]`;
   return text ? `${head} ${text}` : head;
@@ -874,6 +885,6 @@ module.exports = {
   inputWrites, PASTE_ON, PASTE_OFF, ENTER, BACK_TAB, ESC, routeFailure,
   COMMANDS, CLAUDE_COMMANDS, MENU_COMMANDS, isOwnCommand, claudeLine,
   QA_ACTIONS, HEADER_ACTIONS, actionData, parseAction, actionKeyboard,
-  subTag, subPickData, parseSubPick, subKeyboard,
+  subTag, subPickData, parseSubPick, subKeyboard, isShellLine,
   createPoller,
 };
