@@ -9635,28 +9635,39 @@ function geoGate(id, fn) {
   if (geoTabKnown(d) && geoTabDown(d)) setTimeout(() => safeSend('geo:state', geoStateNow()), 0);
 }
 
-async function geoAsk(proxy) {
+async function geoAsk() {
   for (const src of geo.SOURCES) {
     try {
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), geo.FETCH_TIMEOUT_MS);
       let text;
-      if (proxy) {
-        const r = await fetchViaProxy(proxy, src.url, geo.FETCH_TIMEOUT_MS);
-        if (r.status !== 200) continue;
-        text = r.text;
-      } else {
-        const ctl = new AbortController();
-        const timer = setTimeout(() => ctl.abort(), geo.FETCH_TIMEOUT_MS);
-        try {
-          const res = await fetch(src.url, { signal: ctl.signal });
-          if (!res.ok) continue;
-          text = await res.text();
-        } finally { clearTimeout(timer); }
-      }
+      try {
+        const res = await fetch(src.url, { signal: ctl.signal });
+        if (!res.ok) continue;
+        text = await res.text();
+      } finally { clearTimeout(timer); }
       const c = src.parse(text);
       if (c) return c;
-    } catch (_) { /* нет сети, VPN переподключается, прокси молчит — следующий сервис */ }
+    } catch (_) { /* нет сети, VPN переподключается — следующий сервис */ }
   }
   return '';
+}
+
+// То же через прокси подписки. Исход — для geo.nextProxyState: { country }, { busy } или {}.
+// Прокси отказал 429 — второй сервис не спрашиваем: его отказ про соединение, а не про сервис.
+async function geoAskProxy(proxy) {
+  for (const src of geo.SOURCES) {
+    try {
+      const r = await fetchViaProxy(proxy, src.url, geo.PROXY_TIMEOUT_MS);
+      if (r.status !== 200) continue;
+      const c = src.parse(r.text);
+      if (c) return { country: c };
+    } catch (e) {
+      if (e && e.proxyStatus === 429) return { busy: true };
+      /* прокси молчит или оборвал — следующий сервис */
+    }
+  }
+  return {};
 }
 
 // Подписки с прокси, как их показывать человеку: по строке запуска, без адреса прокси.
@@ -9664,7 +9675,7 @@ function geoSubsNow() {
   return NETWORK_PROXIES.map((c) => {
     const st = geoProxy.get(normalizeProxy(c && c.proxy)) || {};
     const country = st.country || '';
-    return { line: String((c && c.line) || ''), country, flag: geo.flagOf(country), tried: !!st.tried, down: !!st.tried && !!st.down };
+    return { line: String((c && c.line) || ''), country, flag: geo.flagOf(country), tried: !!st.tried, down: !!st.tried && !!st.down, busy: !!st.busy };
   });
 }
 
@@ -9703,12 +9714,15 @@ async function geoCheckProxies(why) {
     return subs.stemOf(c && c.line) || '?';
   };
   await Promise.all([...want].map(async (url) => {
-    const c = await geoAsk(url);
+    const out = await geoAskProxy(url);
     const was = geoProxy.get(url) || { country: '', tried: false };
+    const now = geo.nextProxyState(was, out);
+    const c = out.country || '';
     if (c && c !== was.country) tgLog(`регион подписки ${label(url)} через прокси (${why}): ${was.country || '?'} → ${c}`);
-    if (!c && !was.tried) tgLog(`регион подписки ${label(url)}: прокси не ответил (${why})`);
-    if (!c !== !!was.down && was.tried) tgLog(`прокси подписки ${label(url)}: ${c ? 'снова отвечает' : 'перестал отвечать'} (${why})`);
-    geoProxy.set(url, { country: c || was.country, tried: true, down: !c });
+    if (!was.tried && now.down) tgLog(`регион подписки ${label(url)}: прокси не ответил (${why})`);
+    if (was.tried && now.down !== !!was.down) tgLog(`прокси подписки ${label(url)}: ${now.down ? 'перестал отвечать' : 'снова отвечает'} (${why})`);
+    if (now.busy && !was.busy) tgLog(`прокси подписки ${label(url)}: упёрся в лимит соединений тарифа (429) — вкладки работают на открытых (${why})`);
+    geoProxy.set(url, now);
   }));
 }
 
@@ -9720,7 +9734,10 @@ async function geoCheck(why) {
 }
 
 async function geoCheckOnce(why) {
-  const [c] = await Promise.all([geoAsk(''), geoCheckProxies(why)]);
+  // Прокси проверяются дольше прямого выхода (geo.PROXY_TIMEOUT_MS): ждать их, чтобы решить про
+  // прямой выход, нельзя — VPN отвалился, и вкладки без прокси должны замёрзнуть сразу.
+  const proxies = geoCheckProxies(why);
+  const c = await geoAsk();
   const was = geoBlocked;
   const wasCountry = geoCountry;
   geoBlocked = geo.nextBlocked(geoBlocked, c);
@@ -9733,6 +9750,9 @@ async function geoCheckOnce(why) {
       + (geoBlocked !== was ? (geoBlocked ? ' — замораживаю вкладки без своего прокси' : ' — размораживаю вкладки без своего прокси') : ''));
   }
   geoApply();                       // сначала отпускаем ждущих, потом рассказываем окну, кто ещё ждёт
+  safeSend('geo:state', geoStateNow());
+  await proxies;
+  geoApply();
   safeSend('geo:state', geoStateNow());
 }
 

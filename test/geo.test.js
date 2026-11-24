@@ -92,6 +92,23 @@ test('прокси молчит: вкладка «лежит» только по
   assert.strictEqual(GEO.tabProxyDown('http://h:1', { country: 'DE', tried: true, down: false }), false);
 });
 
+test('прокси: занятый (429) — жив, молчание — «не отвечает» только со второй проверки подряд', () => {
+  const ok = GEO.nextProxyState(null, { country: 'UA' });
+  assert.deepStrictEqual([ok.country, ok.down, ok.busy], ['UA', false, false]);
+  const busy = GEO.nextProxyState(ok, { busy: true });
+  assert.deepStrictEqual([busy.country, busy.down, busy.busy], ['UA', false, true]);
+  assert.strictEqual(GEO.tabProxyDown('http://h:1', busy), false);
+  const one = GEO.nextProxyState(busy, {});
+  assert.strictEqual(one.down, false);                 // одна тишина — ещё не повод
+  const two = GEO.nextProxyState(one, {});
+  assert.strictEqual(two.down, true);
+  assert.strictEqual(two.country, 'UA');
+  assert.strictEqual(GEO.nextProxyState(two, { country: 'UA' }).down, false);
+  // Ни разу не ответивший прокси — сразу «не отвечает»: агента в пустоту не запускаем.
+  assert.strictEqual(GEO.nextProxyState(null, {}).down, true);
+  assert.strictEqual(GEO.nextProxyState({ country: '', tried: false }, {}).down, true);
+});
+
 for (const [name, fn] of tests) {
   try { fn(); passed++; console.log('ok —', name); } catch (e) { console.error('FAIL —', name); console.error(e); process.exit(1); }
 }

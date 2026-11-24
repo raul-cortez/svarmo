@@ -7445,7 +7445,7 @@ function geoTitle() {
   const ago = Math.max(0, Math.round((Date.now() - s.checkedAt) / 1000));
   // Флажок — страна самого мака. Подписки со своим прокси выходят в сеть из другой страны, и
   // у них свой флажок в пилюле остатков — здесь только перечисляем, чтобы не путать одно с другим.
-  const viaProxy = (s.subs || []).map((x) => `${geoSubLabel(x.line)}: ${x.down ? 'прокси не отвечает' : x.country ? geoName(x.country) : 'ещё не проверен'} (через прокси)`);
+  const viaProxy = (s.subs || []).map((x) => `${geoSubLabel(x.line)}: ${x.down ? 'прокси не отвечает' : x.country ? geoName(x.country) + (x.busy ? ', прокси упёрся в лимит соединений тарифа' : '') : 'ещё не проверен'} (через прокси)`);
   return [`Адрес: ${geoName(s.country)}`, ...viaProxy, `Проверено ${ago} с назад (${s.why || '—'})`].join('\n');
 }
 // Подпись подписки по строке запуска — её имя из карточки, если оно есть.

@@ -50,7 +50,14 @@ function fetchViaProxy(proxyUrl, targetUrl, timeoutMs) {
     });
     req.on('connect', (res, socket) => {
       sock = socket;
-      if (res.statusCode !== 200) { finish(new Error(`proxy ${res.statusCode}`)); return; }
+      // Прокси ответил отказом — это не «молчит»: он жив, просто не пустил. Код отдаём наверх:
+      // 429 у CyberYozh значит «упёрлись в лимит одновременных соединений тарифа» (geo.js).
+      if (res.statusCode !== 200) {
+        const e = new Error(`proxy ${res.statusCode}`);
+        e.proxyStatus = res.statusCode;
+        finish(e);
+        return;
+      }
       const opts = {
         host: t.hostname,
         port: targetPort,

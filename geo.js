@@ -27,6 +27,14 @@ const SOURCES = [
 const CHECK_EVERY_MS = 15_000;
 const NET_POLL_MS = 2_000;
 const FETCH_TIMEOUT_MS = 5_000;
+// Через прокси подписки ждём дольше. Живой случай 24.11: прокси «личной» (CyberYozh) отвечал за
+// 3–9 с, а новое соединение сверх лимита тарифа держал ~10 с и потом отказывал «429 Concurrency
+// limit exceeded». С 5 с Svarmo не дожидался ни того, ни другого, видел молчание и красил вкладку
+// «прокси не отвечает» по нескольку раз в час — хотя её Клод работал на уже открытых соединениях.
+const PROXY_TIMEOUT_MS = 15_000;
+// «Не отвечает» — только после стольких молчаливых проверок подряд: одна потерянная проверка —
+// это сеть мигнула, а не прокси умер.
+const PROXY_DOWN_AFTER = 2;
 
 // Cloudflare: строки «key=value», страна — в loc.
 function parseTrace(text) {
@@ -99,4 +107,19 @@ function tabProxyDown(proxy, proxyState) {
   return !!proxy && !!proxyState && !!proxyState.tried && !!proxyState.down;
 }
 
-module.exports = { tabProxyDown, BLOCKED, SOURCES, CHECK_EVERY_MS, NET_POLL_MS, FETCH_TIMEOUT_MS, parseTrace, parsePlain, nextBlocked, netSignature, flagOf, tabBlocked, tabKnown };
+// Следующее состояние прокси по исходу проверки. Исход — { country } (ответил сервис через
+// прокси), { busy: true } (прокси сам ответил 429: жив, но соединений тарифа не хватает) или {}
+// (тишина). Занятый прокси — не «не отвечает»: вкладки на нём работают по открытым соединениям,
+// красить их и держать запуск агента не за что; страну оставляем прежнюю. Молчание объявляем
+// не сразу, а после PROXY_DOWN_AFTER проверок подряд — кроме самой первой: агента в прокси,
+// который ни разу не ответил, не запускаем.
+function nextProxyState(was, outcome) {
+  const w = was || { country: '', tried: false };
+  const o = outcome || {};
+  if (o.country) return { country: o.country, tried: true, down: false, busy: false, misses: 0 };
+  if (o.busy) return { country: w.country || '', tried: true, down: false, busy: true, misses: 0 };
+  const misses = (Number(w.misses) || 0) + 1;
+  return { country: w.country || '', tried: true, down: !w.tried || misses >= PROXY_DOWN_AFTER, busy: false, misses };
+}
+
+module.exports = { nextProxyState, PROXY_TIMEOUT_MS, PROXY_DOWN_AFTER, tabProxyDown, BLOCKED, SOURCES, CHECK_EVERY_MS, NET_POLL_MS, FETCH_TIMEOUT_MS, parseTrace, parsePlain, nextBlocked, netSignature, flagOf, tabBlocked, tabKnown };
