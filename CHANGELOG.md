@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.86.0 — 2026-11-24
+
+- fix(geo): a busy proxy (429 concurrency limit) is alive, not «прокси не отвечает»; silence counts after two checks
+- feat(subs): move a tab to another subscription — same conversation, by menu, /sub, or by itself when a subscription dies
+- fix(telegram): «!command» from the phone runs in the shell, not in the chat
+- fix(crew): «ask the foreman» once per question, at most every 15 min — no more 13-line loops
+
 ## 0.85.0 — 2026-11-19
 
 - feat(restart): confirm a restart by the fresh session's hooks, retry another way, else «не поднялся»
